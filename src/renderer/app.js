@@ -41,6 +41,7 @@ function card(game) {
     el('span', { className: 'tag', textContent: consoleName(game.core) }),
     game.version ? el('span', { className: 'tag', textContent: `v${game.version}` }) : null,
     game.players > 1 ? el('span', { className: 'tag', textContent: `${game.players}P` }) : null,
+    game.local ? el('span', { className: 'tag local', textContent: 'On this Mac' }) : null,
   ]);
   const node = el('button', { className: 'card', title: `Play ${game.title}` }, [
     cover,
@@ -53,6 +54,15 @@ function card(game) {
     ]),
   ]);
   node.onclick = () => window.library.play(game.id);
+  if (game.local) {
+    const remove = el('span', { className: 'remove', title: 'Remove from library', textContent: '×' });
+    remove.onclick = async (e) => {
+      e.stopPropagation();
+      state = { ...state, ...(await window.library.removeLocal(game.id)) };
+      render();
+    };
+    node.append(remove);
+  }
   return node;
 }
 
@@ -120,6 +130,28 @@ async function refresh() {
 window.library.onProgress((p) => {
   if (p.phase === 'game' && p.total) showStatus(`${p.message} (${p.done + 1} of ${p.total})`);
   else if (p.phase === 'start') showStatus(p.message);
+});
+
+async function addLocal(files) {
+  const r = await window.library.addLocal(files);
+  state = { ...state, games: r.games };
+  render();
+  const parts = [];
+  if (r.added.length) parts.push(`Added ${r.added.join(', ')}`);
+  if (r.skipped.length) parts.push(r.skipped.join(' · '));
+  if (parts.length) toast(parts.join(' · '));
+}
+
+$('add').onclick = () => addLocal();
+let dragDepth = 0;
+window.addEventListener('dragenter', (e) => { e.preventDefault(); dragDepth++; $('dropzone').hidden = false; });
+window.addEventListener('dragleave', () => { if (--dragDepth <= 0) { dragDepth = 0; $('dropzone').hidden = true; } });
+window.addEventListener('dragover', (e) => e.preventDefault());
+window.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dragDepth = 0;
+  $('dropzone').hidden = true;
+  if (e.dataTransfer.files.length) addLocal(e.dataTransfer.files);
 });
 
 $('refresh').onclick = refresh;

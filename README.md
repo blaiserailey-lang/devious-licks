@@ -13,6 +13,10 @@ Open the DMG and drag **Devious Licks** into Applications.
 
 Controls: arrow keys for the D-pad, **Z** = A, **X** = B, **Enter** = Start, **V** = Select. Game controllers work too. Click the gamepad icon in the emulator's toolbar to remap.
 
+## Playing a game file on just your Mac
+
+Click **Add game** (or drag a ROM onto the library window). The file is copied into the app's own folder on that Mac and shows up with an **On this Mac** tag. It is never uploaded and nobody else sees it, which makes it handy for trying a build before you push it to everyone. Hover the card and click **×** to remove it.
+
 ## Adding or updating a game
 
 Everything players see comes from the `catalog/` folder.

@@ -17,6 +17,10 @@
     </div>
     <div class="actions">
       <input id="search" type="search" placeholder="Search games" aria-label="Search games">
+      <button id="add" title="Add a game file from this Mac">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+        <span>Add game</span>
+      </button>
       <button id="refresh" class="primary">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
         <span>Refresh</span>
@@ -37,6 +41,7 @@
 
   <footer class="footer"><span id="synced"></span></footer>
   <div id="toast" class="toast" role="status" hidden></div>
+  <div id="dropzone" class="dropzone" hidden><div>Drop a game file to add it to this Mac's library</div></div>
   <script src="app.js"></script>
 </body>
 </html>

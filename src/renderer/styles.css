@@ -123,3 +123,18 @@ main { flex: 1; overflow: auto; padding: 4px 28px 28px; }
   background: var(--panel-2); border: 1px solid var(--line); border-left: 4px solid var(--accent-2);
   padding: 12px 16px; border-radius: 10px; box-shadow: 0 10px 30px #000a;
 }
+
+.tag.local { color: var(--accent-2); border-color: #c6ff3d55; }
+.remove {
+  position: absolute; top: 8px; right: 8px; width: 26px; height: 26px; border-radius: 50%;
+  display: grid; place-items: center; font-size: 18px; line-height: 1;
+  background: #000a; color: var(--text); opacity: 0; transition: opacity .15s;
+}
+.card:hover .remove { opacity: 1; }
+.remove:hover { background: var(--accent); }
+.dropzone {
+  position: fixed; inset: 12px; border: 3px dashed var(--accent); border-radius: 18px;
+  background: #0d0b12e6; display: grid; place-items: center; font-size: 18px; font-weight: 700;
+  pointer-events: none;
+}
+.dropzone[hidden] { display: none; }
