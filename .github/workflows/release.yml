@@ -1,6 +1,7 @@
 # Builds the Mac app and publishes the DMG to GitHub Releases.
-# To ship a new version: bump "version" in package.json, then push a tag, e.g.
-#   git tag v0.2.0 && git push origin v0.2.0
+# To ship a new version: bump "version" in package.json, then either push a tag
+# (git tag v0.2.0 && git push origin v0.2.0) or create a release named v0.2.0 on
+# GitHub's Releases page. The DMG gets attached to that release.
 # Friends always download the newest build from:
 #   https://github.com/<owner>/<repo>/releases/latest
 name: Release Mac app
@@ -8,6 +9,8 @@ name: Release Mac app
 on:
   push:
     tags: ["v*"]
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -64,5 +67,6 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.event.release.tag_name || github.ref_name }}
           files: dist/*.dmg
           generate_release_notes: true
