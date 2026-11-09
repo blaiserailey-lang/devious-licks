@@ -1,5 +1,7 @@
 const { app, BrowserWindow, ipcMain, protocol, net, shell, dialog } = require('electron');
 const path = require('path');
+const fs = require('fs');
+const { execFile } = require('child_process');
 const { pathToFileURL } = require('url');
 const { Library, githubSource, folderSource } = require('./catalog');
 const { LocalGames, EXTENSIONS } = require('./local');
@@ -81,10 +83,14 @@ function createLibraryWindow() {
   });
 }
 
-function openGame(id, { reset = false } = {}) {
+async function openGame(id, { reset = false } = {}) {
   const localGame = local.find(id);
   const game = localGame || library.find(id);
   if (!game) return;
+  if (!reset && OPENEMU_CORES.has(game.core) && hasOpenEmu()) {
+    const romPath = localGame ? local.romPath(game) : library.romPath(game);
+    if (await openInOpenEmu(game, romPath)) return;
+  }
   const existing = playerWindows.get(id);
   if (existing && !existing.isDestroyed()) {
     if (!reset) return existing.focus();
@@ -115,7 +121,9 @@ function openGame(id, { reset = false } = {}) {
 }
 
 function view(base = library.view()) {
-  return { ...base, games: [...local.view(), ...base.games] };
+  const openEmu = hasOpenEmu();
+  const games = [...local.view(), ...base.games].map((g) => ({ ...g, openEmu: openEmu && OPENEMU_CORES.has(g.core) }));
+  return { ...base, games };
 }
 
 async function addLocal(files) {
@@ -131,6 +139,28 @@ async function addLocal(files) {
   }
   const result = await local.add(files);
   return { ...view(), ...result };
+}
+
+// N64 is too heavy for the built-in (WebAssembly) emulator on many Macs, so N64
+// games are handed to OpenEmu when it is installed. Option-click still forces
+// the built-in emulator.
+const OPENEMU_CORES = new Set(['n64', 'mupen64plus_next']);
+const OPENEMU_PATHS = ['/Applications/OpenEmu.app', path.join(app.getPath('home'), 'Applications', 'OpenEmu.app')];
+const hasOpenEmu = () => process.platform === 'darwin' && OPENEMU_PATHS.some((p) => fs.existsSync(p));
+
+function openInOpenEmu(game, romPath) {
+  // Give OpenEmu a file named after the game so its library shows the title.
+  const dir = path.join(app.getPath('userData'), 'openemu');
+  fs.mkdirSync(dir, { recursive: true });
+  const safe = game.title.replace(/[\\/:*?"<>|]+/g, ' ').trim() || game.id;
+  const named = path.join(dir, `${safe}${path.extname(romPath)}`);
+  fs.rmSync(named, { force: true });
+  try {
+    fs.linkSync(romPath, named);
+  } catch {
+    fs.copyFileSync(romPath, named);
+  }
+  return new Promise((resolve) => execFile('open', ['-b', 'org.openemu.OpenEmu', named], (err) => resolve(!err)));
 }
 
 let refreshing = null;

@@ -15,6 +15,8 @@ Controls: arrow keys for the D-pad, **Z** = A, **X** = B, **Enter** = Start, **V
 
 If a game stops starting after you change an emulator setting, hold **Option** while clicking the game to start it with default settings.
 
+**N64 games** open in [OpenEmu](https://openemu.org) when it's installed, because N64 is too heavy for the built-in emulator on many Macs. Option-click forces the built-in emulator.
+
 ## Playing a game file on just your Mac
 
 Click **Add game** (or drag a ROM onto the library window). The file is copied into the app's own folder on that Mac and shows up with an **On this Mac** tag. It is never uploaded and nobody else sees it, which makes it handy for trying a build before you push it to everyone. Hover the card and click **×** to remove it.
