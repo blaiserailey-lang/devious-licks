@@ -16,6 +16,9 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.event.release.tag_name || github.ref_name }}
+
 jobs:
   mac:
     runs-on: macos-latest
@@ -63,10 +66,19 @@ jobs:
           name: dmg
           path: dist/*.dmg
 
+      # Tag push / published release: attach to that tag. Manual "Run workflow":
+      # create (or update) the release v<version from package.json>.
+      - name: Pick release tag
+        id: tag
+        run: |
+          if [ -n "${{ github.event.release.tag_name }}" ]; then echo "name=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then echo "name=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          else echo "name=v$(node -p 'require("./package.json").version')" >> "$GITHUB_OUTPUT"; fi
+
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.release.tag_name || github.ref_name }}
+          tag_name: ${{ steps.tag.outputs.name }}
+          target_commitish: ${{ github.sha }}
           files: dist/*.dmg
           generate_release_notes: true
