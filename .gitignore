@@ -3,3 +3,5 @@ vendor/
 dist/
 .DS_Store
 *.download
+player/.build/
+player/dist/

@@ -42,7 +42,6 @@ function card(game) {
     game.version ? el('span', { className: 'tag', textContent: `v${game.version}` }) : null,
     game.players > 1 ? el('span', { className: 'tag', textContent: `${game.players}P` }) : null,
     game.local ? el('span', { className: 'tag local', textContent: 'On this Mac' }) : null,
-    game.openEmu ? el('span', { className: 'tag', textContent: 'Opens in OpenEmu', title: 'Option-click to use the built-in emulator instead' }) : null,
   ]);
   const node = el('button', { className: 'card', title: `Play ${game.title}` }, [
     cover,

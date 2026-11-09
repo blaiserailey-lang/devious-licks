@@ -31,6 +31,14 @@ jobs:
       - run: npm ci
       - run: npm test
 
+      # Native player + N64 core (cached; rebuilt only when the player changes).
+      - uses: actions/cache@v4
+        with:
+          path: player/.build
+          key: player-build-${{ hashFiles('player/build-mac.sh') }}
+      - name: Build native N64 player
+        run: player/build-mac.sh
+
       # Point the app at this repo's catalog, whatever the repo is called.
       - name: Set catalog repo
         run: |

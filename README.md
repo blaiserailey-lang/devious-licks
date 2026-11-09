@@ -15,7 +15,7 @@ Controls: arrow keys for the D-pad, **Z** = A, **X** = B, **Enter** = Start, **V
 
 If a game stops starting after you change an emulator setting, hold **Option** while clicking the game to start it with default settings.
 
-**N64 games** open in [OpenEmu](https://openemu.org) when it's installed, because N64 is too heavy for the built-in emulator on many Macs. Option-click forces the built-in emulator.
+**N64 games** run in the app's native player (a separate Devious Licks window), because N64 is too heavy for the built-in web emulator. N64 keyboard controls: arrows = stick, **X** = A, **C** = B, **Z** = Z trigger, **Q**/**E** = L/R, **Enter** = Start, **I/J/K/L** = C buttons, **F5** = save state, **F9** = load state, **Cmd+F** = fullscreen, **Esc** = exit fullscreen or close. Game controllers work too. Option-click an N64 game to use the built-in web emulator instead.
 
 ## Playing a game file on just your Mac
 

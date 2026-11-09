@@ -1,7 +1,7 @@
 const { app, BrowserWindow, ipcMain, protocol, net, shell, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const { execFile } = require('child_process');
+const { spawn } = require('child_process');
 const { pathToFileURL } = require('url');
 const { Library, githubSource, folderSource } = require('./catalog');
 const { LocalGames, EXTENSIONS } = require('./local');
@@ -83,13 +83,14 @@ function createLibraryWindow() {
   });
 }
 
-async function openGame(id, { reset = false } = {}) {
+function openGame(id, { reset = false } = {}) {
   const localGame = local.find(id);
   const game = localGame || library.find(id);
   if (!game) return;
-  if (!reset && OPENEMU_CORES.has(game.core) && hasOpenEmu()) {
-    const romPath = localGame ? local.romPath(game) : library.romPath(game);
-    if (await openInOpenEmu(game, romPath)) return;
+  const native = !reset && nativeCoreFor(game);
+  if (native) {
+    openNative(game, localGame ? local.romPath(game) : library.romPath(game), native);
+    return;
   }
   const existing = playerWindows.get(id);
   if (existing && !existing.isDestroyed()) {
@@ -121,8 +122,7 @@ async function openGame(id, { reset = false } = {}) {
 }
 
 function view(base = library.view()) {
-  const openEmu = hasOpenEmu();
-  const games = [...local.view(), ...base.games].map((g) => ({ ...g, openEmu: openEmu && OPENEMU_CORES.has(g.core) }));
+  const games = [...local.view(), ...base.games];
   return { ...base, games };
 }
 
@@ -141,26 +141,46 @@ async function addLocal(files) {
   return { ...view(), ...result };
 }
 
-// N64 is too heavy for the built-in (WebAssembly) emulator on many Macs, so N64
-// games are handed to OpenEmu when it is installed. Option-click still forces
-// the built-in emulator.
-const OPENEMU_CORES = new Set(['n64', 'mupen64plus_next']);
-const OPENEMU_PATHS = ['/Applications/OpenEmu.app', path.join(app.getPath('home'), 'Applications', 'OpenEmu.app')];
-const hasOpenEmu = () => process.platform === 'darwin' && OPENEMU_PATHS.some((p) => fs.existsSync(p));
+// N64 is too heavy for the built-in (WebAssembly) emulator, so N64 games run in
+// the bundled native Devious Licks Player (player/dl-player.c + a native
+// Mupen64Plus core). Option-click still forces the built-in emulator.
+const NATIVE_CORES = { n64: 'mupen64plus_next_libretro.dylib', mupen64plus_next: 'mupen64plus_next_libretro.dylib' };
+const PLAYER_DIR = app.isPackaged ? path.join(process.resourcesPath, 'player') : path.join(ROOT, 'player', 'dist');
+const nativePlayers = new Map();
 
-function openInOpenEmu(game, romPath) {
-  // Give OpenEmu a file named after the game so its library shows the title.
-  const dir = path.join(app.getPath('userData'), 'openemu');
-  fs.mkdirSync(dir, { recursive: true });
-  const safe = game.title.replace(/[\\/:*?"<>|]+/g, ' ').trim() || game.id;
-  const named = path.join(dir, `${safe}${path.extname(romPath)}`);
-  fs.rmSync(named, { force: true });
-  try {
-    fs.linkSync(romPath, named);
-  } catch {
-    fs.copyFileSync(romPath, named);
-  }
-  return new Promise((resolve) => execFile('open', ['-b', 'org.openemu.OpenEmu', named], (err) => resolve(!err)));
+function nativeCoreFor(game) {
+  const dylib = NATIVE_CORES[game.core];
+  if (!dylib || process.platform !== 'darwin') return null;
+  const core = path.join(PLAYER_DIR, dylib);
+  const bin = path.join(PLAYER_DIR, 'dl-player');
+  return fs.existsSync(core) && fs.existsSync(bin) ? { core, bin } : null;
+}
+
+function openNative(game, romPath, native) {
+  if (nativePlayers.has(game.id)) return true;
+  const data = app.getPath('userData');
+  const child = spawn(native.bin, [
+    '--core', native.core,
+    '--rom', romPath,
+    '--title', game.title,
+    '--save-dir', path.join(data, 'saves', game.core),
+    '--system-dir', path.join(data, 'system'),
+  ], { stdio: ['ignore', 'ignore', 'pipe'] });
+  let log = '';
+  child.stderr.on('data', (d) => { log = (log + d).slice(-4000); });
+  nativePlayers.set(game.id, child);
+  child.on('exit', (code) => {
+    nativePlayers.delete(game.id);
+    if (code && libraryWindow) {
+      dialog.showMessageBox(libraryWindow, {
+        type: 'warning',
+        message: `${game.title} stopped unexpectedly.`,
+        detail: `Option-click the game to try the built-in emulator instead.\n\n${log.split('\n').slice(-8).join('\n')}`,
+      });
+    }
+  });
+  child.on('error', () => nativePlayers.delete(game.id));
+  return true;
 }
 
 let refreshing = null;
@@ -210,6 +230,10 @@ app.whenReady().then(async () => {
   app.on('activate', () => {
     if (!libraryWindow) createLibraryWindow();
   });
+});
+
+app.on('before-quit', () => {
+  for (const child of nativePlayers.values()) child.kill('SIGTERM');
 });
 
 app.on('window-all-closed', () => {
