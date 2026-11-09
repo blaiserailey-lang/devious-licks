@@ -1,0 +1,134 @@
+const CONSOLES = {
+  nes: 'NES', fceumm: 'NES',
+  snes: 'SNES', snes9x: 'SNES',
+  gba: 'GBA', mgba: 'GBA',
+  gb: 'Game Boy', gbc: 'Game Boy Color', gambatte: 'Game Boy',
+  segaMD: 'Genesis', genesis_plus_gx: 'Genesis',
+};
+const consoleName = (core) => CONSOLES[core] || core.toUpperCase();
+
+const $ = (id) => document.getElementById(id);
+let state = { games: [] };
+let filter = 'all';
+let query = '';
+
+function el(tag, props = {}, children = []) {
+  const node = document.createElement(tag);
+  Object.assign(node, props);
+  for (const c of [].concat(children)) if (c) node.append(c);
+  return node;
+}
+
+function renderFilters() {
+  const consoles = [...new Set(state.games.map((g) => consoleName(g.core)))].sort();
+  const nav = $('filters');
+  nav.replaceChildren();
+  if (consoles.length < 2) return;
+  for (const name of ['all', ...consoles]) {
+    const chip = el('button', { className: 'chip', textContent: name === 'all' ? 'All' : name });
+    chip.setAttribute('aria-pressed', String(filter === name));
+    chip.onclick = () => { filter = name; render(); };
+    nav.append(chip);
+  }
+}
+
+function card(game) {
+  const cover = game.cover
+    ? el('img', { className: 'cover', src: game.cover, alt: '', loading: 'lazy' })
+    : el('div', { className: 'cover placeholder', textContent: game.title.slice(0, 1) });
+  const tags = el('div', { className: 'tags' }, [
+    el('span', { className: 'tag', textContent: consoleName(game.core) }),
+    game.version ? el('span', { className: 'tag', textContent: `v${game.version}` }) : null,
+    game.players > 1 ? el('span', { className: 'tag', textContent: `${game.players}P` }) : null,
+  ]);
+  const node = el('button', { className: 'card', title: `Play ${game.title}` }, [
+    cover,
+    el('span', { className: 'play' }),
+    game.status ? el('span', { className: `badge ${game.status}`, textContent: game.status }) : null,
+    el('div', { className: 'meta' }, [
+      el('div', { className: 'title', textContent: game.title }),
+      game.description ? el('div', { className: 'desc', textContent: game.description }) : null,
+      tags,
+    ]),
+  ]);
+  node.onclick = () => window.library.play(game.id);
+  return node;
+}
+
+function render() {
+  renderFilters();
+  const q = query.trim().toLowerCase();
+  const games = state.games.filter((g) =>
+    (filter === 'all' || consoleName(g.core) === filter) &&
+    (!q || g.title.toLowerCase().includes(q) || (g.description || '').toLowerCase().includes(q)));
+  $('grid').replaceChildren(...games.map(card));
+  $('empty').hidden = games.length > 0;
+  if (state.games.length && !games.length) $('empty-text').textContent = 'No games match your search.';
+  $('subtitle').textContent = `${state.games.length} game${state.games.length === 1 ? '' : 's'}`;
+  $('synced').textContent = state.syncedAt
+    ? `Last updated ${new Date(state.syncedAt).toLocaleString()} from ${state.source}`
+    : `Catalog: ${state.source || ''}`;
+}
+
+function showStatus(text, isError = false) {
+  const s = $('status');
+  s.hidden = !text;
+  s.textContent = text || '';
+  s.classList.toggle('error', isError);
+}
+
+let toastTimer;
+function toast(text) {
+  const t = $('toast');
+  t.textContent = text;
+  t.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => (t.hidden = true), 5000);
+}
+
+function summarize(s) {
+  if (!s) return null;
+  const parts = [];
+  if (s.added.length) parts.push(`New: ${s.added.join(', ')}`);
+  if (s.updated.length) parts.push(`Updated: ${s.updated.join(', ')}`);
+  if (s.removed.length) parts.push(`Removed: ${s.removed.join(', ')}`);
+  return parts.length ? parts.join(' · ') : 'Everything is up to date.';
+}
+
+async function refresh() {
+  const btn = $('refresh');
+  btn.disabled = true;
+  btn.classList.add('spinning');
+  btn.querySelector('span').textContent = 'Refreshing…';
+  try {
+    const result = await window.library.refresh();
+    state = result;
+    render();
+    if (result.error) showStatus(result.error, true);
+    else if (result.summary && result.summary.failed.length) showStatus(`Some games couldn't update: ${result.summary.failed.join('; ')}`, true);
+    else showStatus('');
+    const msg = summarize(result.summary);
+    if (msg) toast(msg);
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove('spinning');
+    btn.querySelector('span').textContent = 'Refresh';
+  }
+}
+
+window.library.onProgress((p) => {
+  if (p.phase === 'game' && p.total) showStatus(`${p.message} (${p.done + 1} of ${p.total})`);
+  else if (p.phase === 'start') showStatus(p.message);
+});
+
+$('refresh').onclick = refresh;
+$('search').oninput = (e) => { query = e.target.value; render(); };
+document.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'r') { e.preventDefault(); refresh(); }
+});
+
+(async () => {
+  state = await window.library.get();
+  render();
+  refresh(); // check for new games every time the app opens
+})();

@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' app:; img-src 'self' app: data:; style-src 'self' 'unsafe-inline'">
+  <title>Devious Licks</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">DL</span>
+      <div>
+        <h1>Devious Licks</h1>
+        <p class="subtitle" id="subtitle">Game library</p>
+      </div>
+    </div>
+    <div class="actions">
+      <input id="search" type="search" placeholder="Search games" aria-label="Search games">
+      <button id="refresh" class="primary">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>Refresh</span>
+      </button>
+    </div>
+  </header>
+
+  <nav class="filters" id="filters" aria-label="Filter by console"></nav>
+
+  <main>
+    <div id="status" class="status" hidden></div>
+    <section id="grid" class="grid" aria-live="polite"></section>
+    <div id="empty" class="empty" hidden>
+      <h2>No games yet</h2>
+      <p id="empty-text">Press Refresh to download the Devious Licks catalog.</p>
+    </div>
+  </main>
+
+  <footer class="footer"><span id="synced"></span></footer>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>

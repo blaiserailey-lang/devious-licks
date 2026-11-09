@@ -1,0 +1,32 @@
+# Keeps catalog/games.json hashes in sync with the ROM files, so the app knows
+# exactly which games changed. Runs whenever anything in catalog/ changes.
+name: Catalog
+
+on:
+  push:
+    paths: ["catalog/**"]
+  pull_request:
+    paths: ["catalog/**"]
+
+permissions:
+  contents: write
+
+jobs:
+  hashes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Update hashes and check the catalog
+        run: node scripts/update-catalog.js
+      - name: Commit updated hashes
+        if: github.event_name == 'push'
+        run: |
+          if ! git diff --quiet catalog/games.json; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898237+github-actions[bot]@users.noreply.github.com"
+            git commit -am "Update catalog hashes"
+            git push
+          fi
