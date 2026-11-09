@@ -4,6 +4,7 @@ const CONSOLES = {
   gba: 'GBA', mgba: 'GBA',
   gb: 'Game Boy', gbc: 'Game Boy Color', gambatte: 'Game Boy',
   segaMD: 'Genesis', genesis_plus_gx: 'Genesis',
+  n64: 'N64', mupen64plus_next: 'N64',
 };
 const consoleName = (core) => CONSOLES[core] || core.toUpperCase();
 

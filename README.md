@@ -45,6 +45,7 @@ To update a game, replace its ROM file (keep the same `id`) and push. To remove 
 | `gb` / `gbc` | Game Boy / Game Boy Color |
 | `gba` | Game Boy Advance |
 | `segaMD` | Sega Genesis / Mega Drive |
+| `n64` | Nintendo 64 |
 
 The repo must be **public** so the app can download the catalog without a login.
 

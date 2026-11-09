@@ -10,7 +10,7 @@ const out = path.join(root, 'vendor', 'emulatorjs', 'data');
 
 // Cores bundled with the app. Add a core package to devDependencies and to
 // this list to support another console.
-const CORES = ['fceumm', 'snes9x', 'mgba', 'gambatte', 'genesis_plus_gx'];
+const CORES = ['fceumm', 'snes9x', 'mgba', 'gambatte', 'genesis_plus_gx', 'mupen64plus_next'];
 
 const src = path.join(nm, 'emulatorjs', 'data');
 if (!fs.existsSync(src)) {

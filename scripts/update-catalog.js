@@ -9,7 +9,7 @@ const dir = path.resolve(process.argv[2] || path.join(__dirname, '..', 'catalog'
 const manifestPath = path.join(dir, 'games.json');
 const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
 
-const CORES = ['nes', 'snes', 'gba', 'gb', 'gbc', 'segaMD', 'fceumm', 'snes9x', 'mgba', 'gambatte', 'genesis_plus_gx'];
+const CORES = ['nes', 'snes', 'gba', 'gb', 'gbc', 'segaMD', 'n64', 'fceumm', 'snes9x', 'mgba', 'gambatte', 'genesis_plus_gx', 'mupen64plus_next'];
 const errors = [];
 const ids = new Set();
 
@@ -21,7 +21,7 @@ for (const game of manifest.games || []) {
   if (game.id && !/^[a-z0-9][a-z0-9-]*$/.test(game.id)) errors.push(`${where}: id must be lowercase letters, numbers and dashes`);
   if (ids.has(game.id)) errors.push(`${where}: duplicate id`);
   ids.add(game.id);
-  if (game.core && !CORES.includes(game.core)) errors.push(`${where}: core "${game.core}" is not bundled (use one of ${CORES.slice(0, 6).join(', ')})`);
+  if (game.core && !CORES.includes(game.core)) errors.push(`${where}: core "${game.core}" is not bundled (use one of ${CORES.slice(0, 7).join(', ')})`);
   if (game.rom) {
     const romPath = path.join(dir, game.rom);
     if (!fs.existsSync(romPath)) {
