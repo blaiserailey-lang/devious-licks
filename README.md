@@ -53,7 +53,7 @@ The repo must be **public** so the app can download the catalog without a login.
 You only need this when the app itself changes, not for game updates.
 
 1. Bump `"version"` in `package.json`.
-2. On GitHub, open **Actions › Release Mac app › Run workflow**. It builds the DMG and publishes release `v<version>`. (Pushing a tag, `git tag v0.2.0 && git push origin v0.2.0`), or publishing a release on the Releases page, works too.)
+2. On GitHub, open **Actions › Release Mac app › Run workflow**. It builds the DMG and publishes release `v<version>`. Pushing a tag such as `v0.2.0`, or publishing a release on the Releases page, works too.
 
 The **Release Mac app** GitHub Action builds a universal (Apple Silicon + Intel) DMG and attaches it to a GitHub Release.
 
