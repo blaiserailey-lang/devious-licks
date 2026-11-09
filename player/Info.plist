@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Embedded in the dl-player binary (it is a single file, not an .app), so
+     macOS shows it as "Devious Licks" and gives it a sharp Retina window. -->
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>
+  <string>Devious Licks</string>
+  <key>CFBundleDisplayName</key>
+  <string>Devious Licks</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.deviouslicks.library.player</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>1.0</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>LSApplicationCategoryType</key>
+  <string>public.app-category.games</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>NSSupportsAutomaticGraphicsSwitching</key>
+  <true/>
+</dict>
+</plist>

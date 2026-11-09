@@ -15,7 +15,9 @@ Controls: arrow keys for the D-pad, **Z** = A, **X** = B, **Enter** = Start, **V
 
 If a game stops starting after you change an emulator setting, hold **Option** while clicking the game to start it with default settings.
 
-**N64 games** run in the app's native player (a separate Devious Licks window), because N64 is too heavy for the built-in web emulator. N64 keyboard controls: arrows = stick, **X** = A, **C** = B, **Z** = Z trigger, **Q**/**E** = L/R, **Enter** = Start, **I/J/K/L** = C buttons, **F5** = save state, **F9** = load state, **Cmd+F** = fullscreen, **Esc** = exit fullscreen or close. Game controllers work too. Option-click an N64 game to use the built-in web emulator instead.
+**N64 games** run in the app's own native player (a separate Devious Licks window), because N64 is too heavy for the built-in web emulator. The player and its N64 emulator are inside the app; nothing else needs to be installed. N64 keyboard controls: arrows = stick, **X** = A, **C** = B, **Z** = Z trigger, **Q**/**E** = L/R, **Enter** = Start, **I/J/K/L** = C buttons, **W/A/S/D** = D-pad, **F5** = save state, **F9** = load state, **Cmd+F** = fullscreen, **Cmd+R** = reset, **Esc** = exit fullscreen or close. Game controllers work too: the first one is player 1 (together with the keyboard), the next ones are players 2 to 4. Option-click an N64 game to use the built-in web emulator instead.
+
+If an N64 game misbehaves, the player's log is at `~/Library/Application Support/Devious Licks/logs/player-n64.log`.
 
 ## Playing a game file on just your Mac
 
@@ -43,6 +45,12 @@ Everything players see comes from the `catalog/` folder.
    ```
 
 3. Commit and push. The **Catalog** GitHub Action fills in each ROM's `sha256` hash automatically (or run `npm run catalog` yourself). That hash is how the app spots changed games.
+
+**Emulator settings for one game.** The N64 emulator recognises commercial games by a fingerprint of the whole file and gives each the settings it needs. A reskinned game has a different fingerprint, so it would get generic settings, and some games freeze with those. The app already knows the settings for the titles in `src/n64.js` (it recognises them by the game code in the ROM's header, which survives a reskin). For anything else, add an `options` object to the game's entry, for example:
+
+```json
+"options": { "mupen64plus-CountPerOp": "1" }
+```
 
 To update a game, replace its ROM file (keep the same `id`) and push. To remove one, delete its entry. Everyone gets the change the next time they press Refresh. Games show a **New** or **Updated** badge for a week.
 
@@ -92,4 +100,7 @@ npm test
 - `src/main.js`: Electron main process, windows and the `app://` protocol.
 - `src/catalog.js`: syncs the catalog from GitHub into a local cache.
 - `src/renderer/`: the library UI (`index.html`) and the emulator page (`player.html`).
+- `src/n64.js`: per-title N64 emulator settings (see "Emulator settings for one game").
+- `player/`: the native player used for N64. `dl-player.c` is a small [libretro](https://www.libretro.com/) frontend (SDL2 + OpenGL); `build-mac.sh` builds it and the N64 core on macOS, `selftest.sh` runs it against a stand-in core and a home-made N64 test cartridge (`test/`). The release workflow runs both, before and after packaging, and publishes nothing if the picture is wrong.
 - Emulation is [EmulatorJS](https://github.com/EmulatorJS/EmulatorJS) (GPL-3.0) running RetroArch cores, bundled so games play offline.
+- The native N64 core is [Mupen64Plus-Next](https://github.com/libretro/mupen64plus-libretro-nx) (GPL-2.0-or-later), built unmodified from the commit pinned in `player/build-core.sh` apart from the two small build fixes in that script. Its licence ships inside the app next to it. [SDL2](https://www.libsdl.org/) is under the zlib licence.

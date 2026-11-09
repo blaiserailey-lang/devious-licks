@@ -31,13 +31,46 @@ jobs:
       - run: npm ci
       - run: npm test
 
-      # Native player + N64 core (cached; rebuilt only when the player changes).
-      - uses: actions/cache@v4
+      # Native N64 player. Its two slow parts (SDL2 and the N64 emulator core)
+      # are cached separately and only rebuilt when their build script changes.
+      - name: Restore SDL2
+        id: sdl
+        uses: actions/cache/restore@v4
         with:
-          path: player/.build
-          key: player-build-${{ hashFiles('player/build-mac.sh') }}
+          path: player/.build/sdl
+          key: player-sdl-${{ hashFiles('player/build-sdl.sh') }}
+      - name: Build SDL2
+        if: steps.sdl.outputs.cache-hit != 'true'
+        run: player/build-sdl.sh
+      - name: Save SDL2
+        if: steps.sdl.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: player/.build/sdl
+          key: ${{ steps.sdl.outputs.cache-primary-key }}
+
+      - name: Restore N64 core
+        id: core
+        uses: actions/cache/restore@v4
+        with:
+          path: player/.build/core
+          key: player-core-${{ hashFiles('player/build-core.sh') }}
+      - name: Build N64 core
+        if: steps.core.outputs.cache-hit != 'true'
+        run: player/build-core.sh
+      - name: Save N64 core
+        if: steps.core.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: player/.build/core
+          key: ${{ steps.core.outputs.cache-primary-key }}
+
       - name: Build native N64 player
         run: player/build-mac.sh
+      # Runs the player for real: a home-made test cartridge has to come up
+      # with the right picture in the N64 core, or nothing gets published.
+      - name: Self-test the native player
+        run: player/selftest.sh
 
       # Point the app at this repo's catalog, whatever the repo is called.
       - name: Set catalog repo
@@ -68,6 +101,17 @@ jobs:
             unset CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID
             npx electron-builder --mac dmg --publish never -c.mac.identity=- -c.mac.hardenedRuntime=false
           fi
+
+      # The same test again on the player inside the finished, signed app.
+      - name: Self-test the packaged app
+        run: |
+          APP="$(find dist -maxdepth 2 -name '*.app' -path '*mac-universal/*' | head -1)"
+          [ -n "$APP" ] || APP="$(find dist -maxdepth 2 -name '*.app' | head -1)"
+          echo "App: $APP"
+          test -d "$APP/Contents/Resources/player"
+          codesign --verify --deep --strict "$APP" || echo "::warning::codesign could not verify the packaged app"
+          codesign -dv "$APP/Contents/Resources/player/dl-player" 2>&1 | sed -n '1,8p'
+          PLAYER_DIR="$APP/Contents/Resources/player" player/selftest.sh
 
       - uses: actions/upload-artifact@v4
         with:

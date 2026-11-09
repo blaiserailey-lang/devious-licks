@@ -5,6 +5,7 @@ const { spawn } = require('child_process');
 const { pathToFileURL } = require('url');
 const { Library, githubSource, folderSource } = require('./catalog');
 const { LocalGames, EXTENSIONS } = require('./local');
+const n64 = require('./n64');
 const pkg = require('../package.json');
 
 const ROOT = path.join(__dirname, '..');
@@ -83,13 +84,34 @@ function createLibraryWindow() {
   });
 }
 
-function openGame(id, { reset = false } = {}) {
+// Emulator settings for one game: what the launcher knows this title needs
+// (see n64.js), then anything set for it in games.json under "options".
+async function emulatorOptions(game, romPath) {
+  const known = N64_CORES.has(game.core) ? n64.optionsFor(await n64.readHeader(romPath)) : {};
+  return { ...known, ...n64.cleanOptions(game.options) };
+}
+
+const opening = new Set(); // game ids being started right now (a double-click must not start two)
+
+async function openGame(id, opts) {
+  if (opening.has(id)) return;
+  opening.add(id);
+  try {
+    await startGame(id, opts);
+  } finally {
+    opening.delete(id);
+  }
+}
+
+async function startGame(id, { reset = false } = {}) {
   const localGame = local.find(id);
   const game = localGame || library.find(id);
   if (!game) return;
+  const romPath = localGame ? local.romPath(game) : library.romPath(game);
+  const options = await emulatorOptions(game, romPath);
   const native = !reset && nativeCoreFor(game);
   if (native) {
-    openNative(game, localGame ? local.romPath(game) : library.romPath(game), native);
+    openNative(game, romPath, native, options);
     return;
   }
   const existing = playerWindows.get(id);
@@ -114,6 +136,7 @@ function openGame(id, { reset = false } = {}) {
     // Save files are tied to this id; it changes only if the ROM changes.
     saveId: `${game.id}-${(game.sha256 || '').slice(0, 10)}`,
   });
+  if (Object.keys(options).length) q.set('options', JSON.stringify(options));
   if (reset) q.set('reset', '1');
   win.loadURL(`app://app/src/renderer/player.html?${q}`);
   win.setMenuBarVisibility(false);
@@ -144,8 +167,10 @@ async function addLocal(files) {
 // N64 is too heavy for the built-in (WebAssembly) emulator, so N64 games run in
 // the bundled native Devious Licks Player (player/dl-player.c + a native
 // Mupen64Plus core). Option-click still forces the built-in emulator.
+const N64_CORES = new Set(['n64', 'mupen64plus_next']);
 const NATIVE_CORES = { n64: 'mupen64plus_next_libretro.dylib', mupen64plus_next: 'mupen64plus_next_libretro.dylib' };
 const PLAYER_DIR = app.isPackaged ? path.join(process.resourcesPath, 'player') : path.join(ROOT, 'player', 'dist');
+const PLAYER_ICON = app.isPackaged ? path.join(process.resourcesPath, 'icon.icns') : path.join(ROOT, 'build', 'icon.png');
 const nativePlayers = new Map();
 
 function nativeCoreFor(game) {
@@ -156,31 +181,68 @@ function nativeCoreFor(game) {
   return fs.existsSync(core) && fs.existsSync(bin) ? { core, bin } : null;
 }
 
-function openNative(game, romPath, native) {
-  if (nativePlayers.has(game.id)) return true;
+function tail(file, lines) {
+  try {
+    return fs.readFileSync(file, 'utf8').trimEnd().split('\n').slice(-lines).join('\n');
+  } catch {
+    return '';
+  }
+}
+
+function openNative(game, romPath, native, options) {
+  const running = nativePlayers.get(game.id);
+  if (running) {
+    running.kill('SIGURG'); // already open: ask it to come to the front (harmless if it isn't listening yet)
+    return;
+  }
   const data = app.getPath('userData');
-  const child = spawn(native.bin, [
+  const logFile = path.join(data, 'logs', `player-${game.core}.log`);
+  const args = [
     '--core', native.core,
     '--rom', romPath,
     '--title', game.title,
     '--save-dir', path.join(data, 'saves', game.core),
     '--system-dir', path.join(data, 'system'),
-  ], { stdio: ['ignore', 'ignore', 'pipe'] });
-  let log = '';
-  child.stderr.on('data', (d) => { log = (log + d).slice(-4000); });
+    '--no-dialog',
+  ];
+  if (fs.existsSync(PLAYER_ICON)) args.push('--icon', PLAYER_ICON);
+  for (const [key, value] of Object.entries(options)) args.push('--option', `${key}=${value}`);
+
+  // Everything the player and the emulator core print goes to a log file, so
+  // there is something to look at when a game misbehaves.
+  let log = 'ignore';
+  try {
+    fs.mkdirSync(path.dirname(logFile), { recursive: true });
+    log = fs.openSync(logFile, 'w');
+    fs.writeSync(log, `Devious Licks ${app.getVersion()} on macOS ${process.getSystemVersion()} (${process.arch})\n${game.title} [${game.core}] ${JSON.stringify(options)}\n\n`);
+  } catch {
+    log = 'ignore';
+  }
+  const child = spawn(native.bin, args, { stdio: ['ignore', log, log] });
+  if (typeof log === 'number') fs.closeSync(log);
   nativePlayers.set(game.id, child);
-  child.on('exit', (code) => {
+
+  let reported = false;
+  const failed = (why) => {
+    if (reported || child.quitting || !libraryWindow) return;
+    reported = true;
+    const lastLines = tail(logFile, 8);
+    dialog.showMessageBox(libraryWindow, {
+      type: 'warning',
+      message: `${game.title} stopped unexpectedly.`,
+      detail: `${why}\n\nOption-click the game to try the built-in emulator instead.${lastLines ? `\n\n${lastLines}` : ''}\n\nFull log: ${logFile}`,
+    });
+  };
+  child.on('exit', (code, signal) => {
     nativePlayers.delete(game.id);
-    if (code && libraryWindow) {
-      dialog.showMessageBox(libraryWindow, {
-        type: 'warning',
-        message: `${game.title} stopped unexpectedly.`,
-        detail: `Option-click the game to try the built-in emulator instead.\n\n${log.split('\n').slice(-8).join('\n')}`,
-      });
-    }
+    if (code === 4) failed("This Mac couldn't open a game window with OpenGL.");
+    else if (code) failed(`The player reported a problem (code ${code}).`);
+    else if (signal) failed(`The player crashed (${signal}).`);
   });
-  child.on('error', () => nativePlayers.delete(game.id));
-  return true;
+  child.on('error', (err) => {
+    nativePlayers.delete(game.id);
+    failed(`The player couldn't start: ${err.message}`);
+  });
 }
 
 let refreshing = null;
@@ -233,7 +295,10 @@ app.whenReady().then(async () => {
 });
 
 app.on('before-quit', () => {
-  for (const child of nativePlayers.values()) child.kill('SIGTERM');
+  for (const child of nativePlayers.values()) {
+    child.quitting = true;
+    child.kill('SIGTERM');
+  }
 });
 
 app.on('window-all-closed', () => {

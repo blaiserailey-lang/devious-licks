@@ -26,6 +26,16 @@ window.EJS_backgroundColor = '#000000';
 window.EJS_language = 'en-US';
 window.EJS_disableAutoLang = true;
 
+// Emulator settings this game needs (see src/n64.js), as core option values.
+try {
+  const options = JSON.parse(params.get('options') || 'null');
+  if (options && typeof options === 'object' && !Array.isArray(options)) {
+    const clean = {};
+    for (const [key, value] of Object.entries(options)) if (typeof value === 'string') clean[key] = value;
+    if (Object.keys(clean).length) window.EJS_defaultOptions = clean;
+  }
+} catch { /* no options */ }
+
 const s = document.createElement('script');
 s.src = dataPath + 'loader.js';
 document.body.append(s);
