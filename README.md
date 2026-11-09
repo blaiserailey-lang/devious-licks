@@ -5,7 +5,7 @@ The Devious Licks game library for Mac. It shows every Devious Licks game, plays
 ## Download (for friends)
 
 Grab the latest `Devious-Licks-x.y.z.dmg` from the **Releases** page:
-`https://github.com/<owner>/<repo>/releases/latest`
+`https://github.com/blaiserailey-lang/devious-licks/releases/latest`
 
 Open the DMG and drag **Devious Licks** into Applications.
 

@@ -9,7 +9,7 @@
   "author": "Devious Licks",
   "deviousLicks": {
     "catalog": {
-      "owner": "OWNER",
+      "owner": "blaiserailey-lang",
       "repo": "devious-licks",
       "branch": "main",
       "path": "catalog"
