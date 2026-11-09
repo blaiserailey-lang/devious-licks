@@ -16,7 +16,7 @@
  *   Self-test (used by CI): [--frames <n>] [--expect <tl|tr|bl|br|c>=<rrggbb>]...
  *             [--peek <hex address>[:<words>]]...  print the console's memory
  *             [--gl-trace <frames>]         record the core's OpenGL calls
- *             [--gl-probe]                  ...and what each drawing call leaves
+ *             [--gl-probe]                  ...and what each framebuffer then shows
  *   dl-player --check --core <core.dylib>   load the core, print what it is, exit
  *
  * Exit codes: 0 fine, 1 error, 2 bad usage, 3 self-test mismatch,
@@ -25,6 +25,7 @@
  * Keys: arrows = analog stick, X = A, C = B, Z = Z trigger, Q/E = L/R,
  * Enter = Start, I/J/K/L = C buttons, W/A/S/D = D-pad, F5 = save state,
  * F9 = load state, Cmd+F / F11 = fullscreen, Cmd+R = reset,
+ * F8 = record one more frame (when started with --gl-trace),
  * Esc = leave fullscreen (or quit when windowed).
  * Game controllers: the first one plays as player 1 (with the keyboard),
  * the next ones as players 2 to 4.
@@ -332,25 +333,34 @@ static NOINLINE bool core_unserialize(const void *buf, size_t size) { bool ok = 
 static NOINLINE void core_shutdown(void) { core.unload_game(); core.deinit(); FP_GUARD(); }
 
 /* ---------- OpenGL call recorder (--gl-trace <frames>, --gl-probe) ----------
- * A hardware-rendered core gets every OpenGL function from the player
+ * A hardware-rendered core asks the player for its OpenGL functions
  * (get_proc_address), so the player can hand it stand-ins that write the call
  * down, ask OpenGL whether it failed, and pass it on. That is how a black
  * picture gets diagnosed without rebuilding the core.
  *
- * What is printed: while the core sets up, the calls that build or draw into
- * framebuffers; for the first <frames> frames and the last frame of a
- * self-test, every recorded call; at any time, a call that failed. An error
- * is reported on the first recorded call after it happened, so it belongs to
- * that call or to an unrecorded one just before it. With --gl-probe each
- * drawing call in a fully recorded frame is followed by the colours it left
- * at the middle of each quarter of the viewport and at its centre. */
+ * Only OpenGL 2.0 and later can be seen this way. A core links the 1.x
+ * functions (glDrawArrays, glClear, glBindTexture, glViewport...) straight to
+ * the system, so those never come past. An error one of them raises is found
+ * waiting when the next recorded call arrives; the state it ran in is then
+ * still in place and gets written down (tr_state).
+ *
+ * What is printed: while the core sets up, the calls that build framebuffers;
+ * for the first <frames> frames, the last frame of a self-test and any frame
+ * asked for with F8, every recorded call; at any time, a call that failed.
+ * With --gl-probe each fully recorded frame ends with the colours every
+ * framebuffer shows at the middle of each of its quarters and at its centre. */
 static long gl_trace;      /* 0 = recorder off */
 static bool gl_probe;
 static bool gl_trace_live; /* inside a recorded window */
 static bool tr_detail;     /* ...in which every call is printed, not just the framebuffer ones */
 static long tr_frame;      /* the frame being run, 0 before the first */
-static unsigned tr_failures, tr_shaders, tr_shader_fails, tr_programs, tr_program_fails;
+static bool tr_request;    /* F8: record the next frame in full */
+static unsigned tr_failures, tr_unseen, tr_shaders, tr_shader_fails, tr_programs, tr_program_fails;
 static GLuint tr_draw_fb, tr_read_fb, tr_program;
+static GLuint tr_fbs[48];  /* the framebuffers the core has made */
+static unsigned tr_n_fbs;
+static GLint tr_seen[16][4]; /* error, program, vertex array, framebuffer: states already written down */
+static unsigned tr_n_seen;
 static char tr_last[400];
 static unsigned tr_repeats;
 
@@ -361,6 +371,18 @@ static void (APIENTRY *tr_GetProgramiv)(GLuint, GLenum, GLint *);
 static void (APIENTRY *tr_GetProgramInfoLog)(GLuint, GLsizei, GLsizei *, GLchar *);
 static void (APIENTRY *tr_GetIntegerv)(GLenum, GLint *);
 static void (APIENTRY *tr_BindBuffer)(GLenum, GLuint);
+static void (APIENTRY *tr_GetVertexAttribiv)(GLuint, GLenum, GLint *);
+static void (APIENTRY *tr_ValidateProgram)(GLuint);
+static void (APIENTRY *tr_GetActiveAttrib)(GLuint, GLuint, GLsizei, GLsizei *, GLint *, GLenum *, GLchar *);
+static GLint (APIENTRY *tr_GetAttribLocation)(GLuint, const GLchar *);
+static void (APIENTRY *tr_GetActiveUniform)(GLuint, GLuint, GLsizei, GLsizei *, GLint *, GLenum *, GLchar *);
+static GLint (APIENTRY *tr_GetUniformLocation)(GLuint, const GLchar *);
+static void (APIENTRY *tr_GetUniformiv)(GLuint, GLint, GLint *);
+static void (APIENTRY *tr_GetBufferParameteriv)(GLenum, GLenum, GLint *);
+static GLboolean (APIENTRY *tr_IsEnabled)(GLenum);
+static void (APIENTRY *tr_GetFramebufferAttachmentParameteriv)(GLenum, GLenum, GLenum, GLint *);
+static void (APIENTRY *tr_GetTexLevelParameteriv)(GLenum, GLint, GLenum, GLint *);
+static void (APIENTRY *tr_GetRenderbufferParameteriv)(GLenum, GLenum, GLint *);
 
 static void tr_flush(void) {
   if (tr_repeats) fprintf(stderr, "[gl]   (the same call %u more time%s)\n", tr_repeats, tr_repeats == 1 ? "" : "s");
@@ -502,50 +524,212 @@ static void tr_shader_failure(GLuint shader) {
   free(src);
 }
 
-/* --gl-probe: what the framebuffer being drawn into shows right now. It reads
- * five pixels and puts every piece of OpenGL state it touches back. */
-static void tr_probe(void) {
-  enum { READ_FB_BINDING = 0x8CAA, DRAW_FB_BINDING = 0x8CA6, PACK_BUFFER_BINDING = 0x88ED, READ_BUFFER = 0x0C02,
-         VIEWPORT = 0x0BA2, PACK_SKIP_ROWS = 0x0D03, PACK_SKIP_PIXELS = 0x0D04, PACK_ROW_LENGTH = 0x0D02 };
+static const char *tr_sampler(GLenum type) {
+  switch (type) {
+    case 0x8B5E: return "sampler2D";
+    case 0x8B62: return "sampler2DShadow";
+    case 0x8DCA: return "isampler2D";
+    case 0x8DD2: return "usampler2D";
+    case 0x9108: return "sampler2DMS";
+    case 0x9109: return "isampler2DMS";
+    case 0x910A: return "usampler2DMS";
+    default: break;
+  }
+  bool sampler = (type >= 0x8B5D && type <= 0x8B64) || (type >= 0x8DC0 && type <= 0x8DC5) || (type >= 0x8DC9 && type <= 0x8DD8) ||
+                 (type >= 0x910B && type <= 0x910D);
+  return sampler ? "sampler" : NULL;
+}
+
+/* What a drawing call depends on, as OpenGL has it right now. */
+static void tr_state(void) {
+  enum { CURRENT_PROGRAM = 0x8B8D, VAO_BINDING = 0x85B5, ARRAY_BINDING = 0x8894, ELEMENT_BINDING = 0x8895, DRAW_FB_BINDING = 0x8CA6,
+         READ_FB_BINDING = 0x8CAA, VIEWPORT = 0x0BA2, SCISSOR_BOX = 0x0C10, MAX_ATTRIBS = 0x8869, ATTRIB_ON = 0x8622, ATTRIB_SIZE = 0x8623,
+         ATTRIB_STRIDE = 0x8624, ATTRIB_TYPE = 0x8625, ATTRIB_BUFFER = 0x889F, VALIDATE_STATUS = 0x8B83, ACTIVE_ATTRIBUTES = 0x8B89,
+         ACTIVE_UNIFORMS = 0x8B86, BUFFER_MAPPED = 0x88BC };
+  GLint program = 0, vao = 0, array = 0, element = 0, draw_fb = 0, read_fb = 0, vp[4] = { 0, 0, 0, 0 }, sc[4] = { 0, 0, 0, 0 }, n = 0;
+  char line[700];
+  size_t len;
+  if (!tr_GetIntegerv) return;
+  tr_GetIntegerv(CURRENT_PROGRAM, &program);
+  tr_GetIntegerv(VAO_BINDING, &vao);
+  tr_GetIntegerv(ARRAY_BINDING, &array);
+  tr_GetIntegerv(ELEMENT_BINDING, &element);
+  tr_GetIntegerv(DRAW_FB_BINDING, &draw_fb);
+  tr_GetIntegerv(READ_FB_BINDING, &read_fb);
+  tr_GetIntegerv(VIEWPORT, vp);
+  tr_GetIntegerv(SCISSOR_BOX, sc);
+  GLenum status = glCheckFramebufferStatus_(GL_DRAW_FRAMEBUFFER);
+  fprintf(stderr, "[gl]     drawing into framebuffer %d (%s), reading from %d; viewport %d,%d %dx%d; scissor %s %d,%d %dx%d\n", draw_fb,
+          status == GL_FRAMEBUFFER_COMPLETE ? "complete" : "NOT complete", read_fb, vp[0], vp[1], vp[2], vp[3],
+          tr_IsEnabled && tr_IsEnabled(GL_SCISSOR_TEST) ? "on" : "off", sc[0], sc[1], sc[2], sc[3]);
+  fprintf(stderr, "[gl]     program %d, vertex array %d, array buffer %d, element buffer %d\n", program, vao, array, element);
+  if (program && tr_ValidateProgram && tr_GetProgramiv) {
+    GLint ok = 1;
+    char log[1024] = "";
+    tr_ValidateProgram((GLuint)program);
+    tr_GetProgramiv((GLuint)program, VALIDATE_STATUS, &ok);
+    if (tr_GetProgramInfoLog) tr_GetProgramInfoLog((GLuint)program, (GLsizei)sizeof log, NULL, log);
+    fprintf(stderr, "[gl]     OpenGL says program %d %s as things stand\n", program, ok ? "can run" : "can NOT run");
+    tr_text(log, 6);
+  }
+  if (program && tr_GetProgramiv && tr_GetActiveAttrib && tr_GetAttribLocation) {
+    tr_GetProgramiv((GLuint)program, ACTIVE_ATTRIBUTES, &n);
+    line[0] = 0;
+    len = 0;
+    for (GLint i = 0; i < n && i < 16 && len < sizeof line - 100; i++) {
+      char name[64] = "";
+      GLint size = 0;
+      GLenum type = 0;
+      tr_GetActiveAttrib((GLuint)program, (GLuint)i, (GLsizei)sizeof name, NULL, &size, &type, name);
+      len += (size_t)snprintf(line + len, sizeof line - len, " %s=%d", name, (int)tr_GetAttribLocation((GLuint)program, name));
+    }
+    fprintf(stderr, "[gl]     the program reads vertex attributes:%s\n", len ? line : " none");
+  }
+  if (tr_GetVertexAttribiv) {
+    tr_GetIntegerv(MAX_ATTRIBS, &n);
+    for (GLint i = 0; i < n && i < 32; i++) {
+      GLint on = 0, buffer = 0, size = 0, stride = 0, type = 0;
+      tr_GetVertexAttribiv((GLuint)i, ATTRIB_ON, &on);
+      if (!on) continue;
+      tr_GetVertexAttribiv((GLuint)i, ATTRIB_BUFFER, &buffer);
+      tr_GetVertexAttribiv((GLuint)i, ATTRIB_SIZE, &size);
+      tr_GetVertexAttribiv((GLuint)i, ATTRIB_STRIDE, &stride);
+      tr_GetVertexAttribiv((GLuint)i, ATTRIB_TYPE, &type);
+      fprintf(stderr, "[gl]     attribute array %d is on: buffer %d, %d x %s, stride %d%s\n", (int)i, buffer, size, tr_name((GLenum)type), stride,
+              buffer ? "" : "   <-- on, but with no buffer to read from");
+    }
+  }
+  if (program && tr_GetProgramiv && tr_GetActiveUniform && tr_GetUniformLocation && tr_GetUniformiv) {
+    n = 0;
+    tr_GetProgramiv((GLuint)program, ACTIVE_UNIFORMS, &n);
+    line[0] = 0;
+    len = 0;
+    for (GLint i = 0; i < n && i < 96 && len < sizeof line - 100; i++) {
+      char name[64] = "";
+      GLint size = 0, unit = -1;
+      GLenum type = 0;
+      tr_GetActiveUniform((GLuint)program, (GLuint)i, (GLsizei)sizeof name, NULL, &size, &type, name);
+      const char *kind = tr_sampler(type);
+      if (!kind) continue;
+      GLint at = tr_GetUniformLocation((GLuint)program, name);
+      if (at >= 0) tr_GetUniformiv((GLuint)program, at, &unit);
+      len += (size_t)snprintf(line + len, sizeof line - len, " %s(%s)=%d", name, kind, unit);
+    }
+    if (len) fprintf(stderr, "[gl]     its textures come from units:%s\n", line);
+  }
+  if (array && tr_GetBufferParameteriv) {
+    GLint mapped = 0;
+    tr_GetBufferParameteriv(0x8892, BUFFER_MAPPED, &mapped);
+    if (mapped) fprintf(stderr, "[gl]     array buffer %d is still mapped\n", array);
+  }
+  while (glGetError_()) { }
+}
+
+/* An error that is already waiting when a recorded call arrives was raised by
+ * a call the recorder can't see. The first time it happens in a given state,
+ * that state is written down. */
+static void tr_pending(const char *next) {
+  GLenum err = glGetError_();
+  if (!err) return;
+  while (glGetError_()) { }
+  if (++tr_unseen > 12) return; /* after that they are only counted */
+  tr_flush();
+  if (gl_trace_live) fprintf(stderr, "[gl] ");
+  else if (tr_frame) fprintf(stderr, "[gl] frame %ld: ", tr_frame);
+  else fprintf(stderr, "[gl] set-up: ");
+  fprintf(stderr, "GL error 0x%04x was raised by a call that can't be recorded, before %s\n", err, next);
+  GLint now[4] = { (GLint)err, 0, 0, 0 };
+  if (!tr_GetIntegerv) return;
+  tr_GetIntegerv(0x8B8D, &now[1]);
+  tr_GetIntegerv(0x85B5, &now[2]);
+  tr_GetIntegerv(0x8CA6, &now[3]);
+  for (unsigned i = 0; i < tr_n_seen; i++)
+    if (!memcmp(tr_seen[i], now, sizeof now)) return;
+  if (tr_n_seen == sizeof tr_seen / sizeof tr_seen[0]) return;
+  memcpy(tr_seen[tr_n_seen++], now, sizeof now);
+  tr_state();
+}
+
+/* --gl-probe: what every framebuffer shows once a fully recorded frame is done:
+ * five pixels each, named as OpenGL stores them (y runs upward). Every piece
+ * of OpenGL state this touches is put back. */
+static void tr_survey(void) {
+  enum { READ_FB_BINDING = 0x8CAA, PACK_BUFFER_BINDING = 0x88ED, READ_BUFFER = 0x0C02, PACK_SKIP_ROWS = 0x0D03, PACK_SKIP_PIXELS = 0x0D04,
+         PACK_ROW_LENGTH = 0x0D02, TEXTURE_BINDING_2D = 0x8069, RENDERBUFFER_BINDING = 0x8CA7, OBJECT_TYPE = 0x8CD0, OBJECT_NAME = 0x8CD1,
+         TEXTURE = 0x1702, TEXTURE_WIDTH = 0x1000, TEXTURE_HEIGHT = 0x1001, RENDERBUFFER_WIDTH = 0x8D42, RENDERBUFFER_HEIGHT = 0x8D43 };
   static const float px[5] = { 0.25f, 0.75f, 0.25f, 0.75f, 0.5f }, py[5] = { 0.75f, 0.75f, 0.25f, 0.25f, 0.5f };
-  GLint read_fb = 0, draw_fb = 0, pack = 0, read_buffer = 0, skip_rows = 0, skip_pixels = 0, row_length = 0, vp[4] = { 0, 0, 0, 0 };
-  unsigned got[5];
-  if (!gl_probe || !gl_trace_live || !tr_detail || !tr_GetIntegerv || !tr_BindBuffer) return;
+  GLint read_fb = 0, pack = 0, skip_rows = 0, skip_pixels = 0, row_length = 0, texture = 0, renderbuffer = 0;
+  if (!gl_probe || !tr_GetIntegerv || !tr_BindBuffer || !tr_GetFramebufferAttachmentParameteriv || !tr_GetTexLevelParameteriv ||
+      !tr_GetRenderbufferParameteriv) return;
   tr_GetIntegerv(PACK_SKIP_ROWS, &skip_rows);
   tr_GetIntegerv(PACK_SKIP_PIXELS, &skip_pixels);
   tr_GetIntegerv(PACK_ROW_LENGTH, &row_length);
-  tr_GetIntegerv(VIEWPORT, vp);
-  if (skip_rows || skip_pixels || row_length || vp[2] <= 0 || vp[3] <= 0) return;
+  if (skip_rows || skip_pixels || row_length) return;
   tr_GetIntegerv(READ_FB_BINDING, &read_fb);
-  tr_GetIntegerv(DRAW_FB_BINDING, &draw_fb);
   tr_GetIntegerv(PACK_BUFFER_BINDING, &pack);
+  tr_GetIntegerv(TEXTURE_BINDING_2D, &texture);
+  tr_GetIntegerv(RENDERBUFFER_BINDING, &renderbuffer);
   if (pack) tr_BindBuffer(0x88EB, 0);
-  glBindFramebuffer_(GL_READ_FRAMEBUFFER, (GLuint)draw_fb);
-  tr_GetIntegerv(READ_BUFFER, &read_buffer);
-  glReadBuffer_(draw_fb ? GL_COLOR_ATTACHMENT0 : GL_BACK);
-  for (int i = 0; i < 5; i++) {
-    unsigned char p[4] = { 0, 0, 0, 0 };
-    glReadPixels_(vp[0] + (GLint)(vp[2] * px[i]), vp[1] + (GLint)(vp[3] * py[i]), 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, p);
-    got[i] = ((unsigned)p[0] << 16) | ((unsigned)p[1] << 8) | p[2];
+  while (glGetError_()) { }
+  tr_flush();
+  for (unsigned k = 0; k <= tr_n_fbs; k++) {
+    GLuint id = k ? tr_fbs[k - 1] : fbo;
+    const char *whose = k ? "" : ", the player's";
+    GLint type = 0, name = 0, w = 0, h = 0, read_buffer = 0;
+    unsigned got[5];
+    if (!id) continue;
+    glBindFramebuffer_(GL_READ_FRAMEBUFFER, id);
+    GLenum status = glCheckFramebufferStatus_(GL_READ_FRAMEBUFFER);
+    if (status != GL_FRAMEBUFFER_COMPLETE) {
+      while (glGetError_()) { }
+      fprintf(stderr, "[gl]     framebuffer %u%s: not usable (%s)\n", id, whose, tr_name(status));
+      continue;
+    }
+    tr_GetFramebufferAttachmentParameteriv(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, OBJECT_TYPE, &type);
+    tr_GetFramebufferAttachmentParameteriv(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, OBJECT_NAME, &name);
+    if (type == TEXTURE) {
+      glBindTexture_(GL_TEXTURE_2D, (GLuint)name);
+      tr_GetTexLevelParameteriv(GL_TEXTURE_2D, 0, TEXTURE_WIDTH, &w);
+      tr_GetTexLevelParameteriv(GL_TEXTURE_2D, 0, TEXTURE_HEIGHT, &h);
+    } else if (type == GL_RENDERBUFFER) {
+      glBindRenderbuffer_(GL_RENDERBUFFER, (GLuint)name);
+      tr_GetRenderbufferParameteriv(GL_RENDERBUFFER, RENDERBUFFER_WIDTH, &w);
+      tr_GetRenderbufferParameteriv(GL_RENDERBUFFER, RENDERBUFFER_HEIGHT, &h);
+    }
+    if (glGetError_() || w <= 0 || h <= 0) {
+      while (glGetError_()) { }
+      fprintf(stderr, "[gl]     framebuffer %u%s: has no colour picture that can be measured\n", id, whose);
+      continue;
+    }
+    tr_GetIntegerv(READ_BUFFER, &read_buffer);
+    glReadBuffer_(GL_COLOR_ATTACHMENT0);
+    for (int i = 0; i < 5; i++) {
+      unsigned char p[4] = { 0, 0, 0, 0 };
+      glReadPixels_((GLint)((float)w * px[i]), (GLint)((float)h * py[i]), 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, p);
+      got[i] = ((unsigned)p[0] << 16) | ((unsigned)p[1] << 8) | p[2];
+    }
+    GLenum err = glGetError_();
+    glReadBuffer_((GLenum)read_buffer);
+    while (glGetError_()) { }
+    if (err) fprintf(stderr, "[gl]     framebuffer %u%s (%dx%d): can't be read back (0x%04x)\n", id, whose, w, h, err);
+    else fprintf(stderr, "[gl]     framebuffer %u%s (%dx%d) shows tl=%06x tr=%06x bl=%06x br=%06x c=%06x\n", id, whose, w, h,
+                 got[0], got[1], got[2], got[3], got[4]);
   }
-  GLenum err = glGetError_();
-  glReadBuffer_((GLenum)read_buffer);
+  glBindTexture_(GL_TEXTURE_2D, (GLuint)texture);
+  glBindRenderbuffer_(GL_RENDERBUFFER, (GLuint)renderbuffer);
   glBindFramebuffer_(GL_READ_FRAMEBUFFER, (GLuint)read_fb);
   if (pack) tr_BindBuffer(0x88EB, (GLuint)pack);
   while (glGetError_()) { }
-  tr_flush();
-  if (err) fprintf(stderr, "[gl]     (framebuffer %d can't be read back: 0x%04x)\n", draw_fb, err);
-  else fprintf(stderr, "[gl]     framebuffer %d now shows tl=%06x tr=%06x bl=%06x br=%06x c=%06x in viewport %d,%d %dx%d\n", draw_fb,
-               got[0], got[1], got[2], got[3], got[4], vp[0], vp[1], vp[2], vp[3]);
 }
 
 /* Stand-ins. real_<name> is the function OpenGL itself provides. */
-#define TR_VOID(detail, probe, name, params, args, ...) \
+#define TR_VOID(detail, name, params, args, ...) \
   static void (APIENTRY *real_##name) params; \
-  static void APIENTRY tr_##name params { real_##name args; tr(detail, #name __VA_ARGS__); if (probe) tr_probe(); }
+  static void APIENTRY tr_##name params { tr_pending(#name); real_##name args; tr(detail, #name __VA_ARGS__); }
 
 static void (APIENTRY *real_glBindFramebuffer)(GLenum, GLuint);
 static void APIENTRY tr_glBindFramebuffer(GLenum target, GLuint id) {
+  tr_pending("glBindFramebuffer");
   real_glBindFramebuffer(target, id);
   if (target != GL_READ_FRAMEBUFFER) tr_draw_fb = id;
   if (target != GL_DRAW_FRAMEBUFFER) tr_read_fb = id;
@@ -554,19 +738,26 @@ static void APIENTRY tr_glBindFramebuffer(GLenum target, GLuint id) {
 
 static void (APIENTRY *real_glGenFramebuffers)(GLsizei, GLuint *);
 static void APIENTRY tr_glGenFramebuffers(GLsizei n, GLuint *ids) {
+  tr_pending("glGenFramebuffers");
   real_glGenFramebuffers(n, ids);
+  for (GLsizei i = 0; i < n && tr_n_fbs < sizeof tr_fbs / sizeof tr_fbs[0]; i++) tr_fbs[tr_n_fbs++] = ids[i];
   tr(0, "glGenFramebuffers(%d) -> %u", n, n > 0 ? ids[0] : 0);
 }
 
 static void (APIENTRY *real_glDeleteFramebuffers)(GLsizei, const GLuint *);
 static void APIENTRY tr_glDeleteFramebuffers(GLsizei n, const GLuint *ids) {
   GLuint first = n > 0 ? ids[0] : 0;
+  tr_pending("glDeleteFramebuffers");
+  for (GLsizei i = 0; i < n; i++)
+    for (unsigned k = 0; k < tr_n_fbs; k++)
+      if (tr_fbs[k] == ids[i]) { tr_fbs[k] = tr_fbs[--tr_n_fbs]; break; }
   real_glDeleteFramebuffers(n, ids);
   tr(0, "glDeleteFramebuffers(%d: %u)", n, first);
 }
 
 static GLenum (APIENTRY *real_glCheckFramebufferStatus)(GLenum);
 static GLenum APIENTRY tr_glCheckFramebufferStatus(GLenum target) {
+  tr_pending("glCheckFramebufferStatus");
   GLenum status = real_glCheckFramebufferStatus(target);
   bool live = gl_trace_live;
   if (status != GL_FRAMEBUFFER_COMPLETE) gl_trace_live = true; /* always worth a line */
@@ -578,12 +769,14 @@ static GLenum APIENTRY tr_glCheckFramebufferStatus(GLenum target) {
 
 static void (APIENTRY *real_glDrawBuffers)(GLsizei, const GLenum *);
 static void APIENTRY tr_glDrawBuffers(GLsizei n, const GLenum *bufs) {
+  tr_pending("glDrawBuffers");
   real_glDrawBuffers(n, bufs);
   tr(0, "glDrawBuffers(%d: %s)  [draw fb %u]", n, n > 0 ? tr_name(bufs[0]) : "-", tr_draw_fb);
 }
 
 static void (APIENTRY *real_glUseProgram)(GLuint);
 static void APIENTRY tr_glUseProgram(GLuint program) {
+  tr_pending("glUseProgram");
   real_glUseProgram(program);
   tr_program = program;
   tr(1, "glUseProgram(%u)", program);
@@ -593,6 +786,7 @@ static void (APIENTRY *real_glCompileShader)(GLuint);
 static void APIENTRY tr_glCompileShader(GLuint shader) {
   GLint ok = 1;
   bool live = gl_trace_live;
+  tr_pending("glCompileShader");
   real_glCompileShader(shader);
   if (tr_GetShaderiv) tr_GetShaderiv(shader, GL_COMPILE_STATUS, &ok);
   tr_shaders++;
@@ -607,6 +801,7 @@ static void (APIENTRY *real_glLinkProgram)(GLuint);
 static void APIENTRY tr_glLinkProgram(GLuint program) {
   GLint ok = 1;
   bool live = gl_trace_live;
+  tr_pending("glLinkProgram");
   real_glLinkProgram(program);
   if (tr_GetProgramiv) tr_GetProgramiv(program, GL_LINK_STATUS, &ok);
   tr_programs++;
@@ -623,6 +818,7 @@ static void APIENTRY tr_glLinkProgram(GLuint program) {
 
 static void *(APIENTRY *real_glMapBufferRange)(GLenum, ptrdiff_t, ptrdiff_t, GLbitfield);
 static void *APIENTRY tr_glMapBufferRange(GLenum target, ptrdiff_t offset, ptrdiff_t length, GLbitfield access) {
+  tr_pending("glMapBufferRange");
   void *p = real_glMapBufferRange(target, offset, length, access);
   tr(1, "glMapBufferRange(%s, %ld, %ld, 0x%x) -> %s", tr_name(target), (long)offset, (long)length, access, p ? "mapped" : "NULL");
   return p;
@@ -630,50 +826,51 @@ static void *APIENTRY tr_glMapBufferRange(GLenum target, ptrdiff_t offset, ptrdi
 
 static GLboolean (APIENTRY *real_glUnmapBuffer)(GLenum);
 static GLboolean APIENTRY tr_glUnmapBuffer(GLenum target) {
+  tr_pending("glUnmapBuffer");
   GLboolean ok = real_glUnmapBuffer(target);
   tr(1, "glUnmapBuffer(%s) -> %d", tr_name(target), ok);
   return ok;
 }
 
-TR_VOID(0, 0, glFramebufferTexture2D, (GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level), (target, attachment, textarget, texture, level),
+TR_VOID(0, glFramebufferTexture2D, (GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level), (target, attachment, textarget, texture, level),
         "(%s, %s, %s, texture %u, level %d)  [draw fb %u, read fb %u]", tr_name(target), tr_name(attachment), tr_name(textarget), texture, level, tr_draw_fb, tr_read_fb)
-TR_VOID(0, 0, glFramebufferRenderbuffer, (GLenum target, GLenum attachment, GLenum rbtarget, GLuint rb), (target, attachment, rbtarget, rb),
+TR_VOID(0, glFramebufferRenderbuffer, (GLenum target, GLenum attachment, GLenum rbtarget, GLuint rb), (target, attachment, rbtarget, rb),
         "(%s, %s, renderbuffer %u)  [draw fb %u, read fb %u]", tr_name(target), tr_name(attachment), rb, tr_draw_fb, tr_read_fb)
-TR_VOID(0, 0, glRenderbufferStorage, (GLenum target, GLenum format, GLsizei w, GLsizei h), (target, format, w, h), "(%s, %dx%d)", tr_name(format), w, h)
-TR_VOID(0, 1, glBlitFramebuffer, (GLint sx0, GLint sy0, GLint sx1, GLint sy1, GLint dx0, GLint dy0, GLint dx1, GLint dy1, GLbitfield mask, GLenum filter),
+TR_VOID(0, glRenderbufferStorage, (GLenum target, GLenum format, GLsizei w, GLsizei h), (target, format, w, h), "(%s, %dx%d)", tr_name(format), w, h)
+TR_VOID(0, glBlitFramebuffer, (GLint sx0, GLint sy0, GLint sx1, GLint sy1, GLint dx0, GLint dy0, GLint dx1, GLint dy1, GLbitfield mask, GLenum filter),
         (sx0, sy0, sx1, sy1, dx0, dy0, dx1, dy1, mask, filter),
         "(%d,%d %d,%d -> %d,%d %d,%d, mask 0x%x, %s)  [read fb %u -> draw fb %u]", sx0, sy0, sx1, sy1, dx0, dy0, dx1, dy1, mask, tr_name(filter), tr_read_fb, tr_draw_fb)
-TR_VOID(0, 0, glReadBuffer, (GLenum src), (src), "(%s)  [read fb %u]", tr_name(src), tr_read_fb)
-TR_VOID(0, 0, glReadPixels, (GLint x, GLint y, GLsizei w, GLsizei h, GLenum format, GLenum type, void *pixels), (x, y, w, h, format, type, pixels),
+TR_VOID(0, glReadBuffer, (GLenum src), (src), "(%s)  [read fb %u]", tr_name(src), tr_read_fb)
+TR_VOID(0, glReadPixels, (GLint x, GLint y, GLsizei w, GLsizei h, GLenum format, GLenum type, void *pixels), (x, y, w, h, format, type, pixels),
         "(%d,%d %dx%d, %s, %s)  [read fb %u]", x, y, w, h, tr_name(format), tr_name(type), tr_read_fb)
-TR_VOID(0, 1, glClear, (GLbitfield mask), (mask), "(%s%s%s)  [draw fb %u]", mask & 0x4000 ? "colour" : "", mask & 0x100 ? " depth" : "", mask & 0x400 ? " stencil" : "", tr_draw_fb)
-TR_VOID(1, 0, glViewport, (GLint x, GLint y, GLsizei w, GLsizei h), (x, y, w, h), "(%d, %d, %d, %d)", x, y, w, h)
-TR_VOID(1, 0, glScissor, (GLint x, GLint y, GLsizei w, GLsizei h), (x, y, w, h), "(%d, %d, %d, %d)", x, y, w, h)
-TR_VOID(1, 0, glEnable, (GLenum cap), (cap), "(%s)", tr_name(cap))
-TR_VOID(1, 0, glDisable, (GLenum cap), (cap), "(%s)", tr_name(cap))
-TR_VOID(1, 0, glColorMask, (GLboolean r, GLboolean g, GLboolean b, GLboolean a), (r, g, b, a), "(%d, %d, %d, %d)", r, g, b, a)
-TR_VOID(0, 1, glDrawArrays, (GLenum mode, GLint first, GLsizei count), (mode, first, count),
+TR_VOID(0, glClear, (GLbitfield mask), (mask), "(%s%s%s)  [draw fb %u]", mask & 0x4000 ? "colour" : "", mask & 0x100 ? " depth" : "", mask & 0x400 ? " stencil" : "", tr_draw_fb)
+TR_VOID(1, glViewport, (GLint x, GLint y, GLsizei w, GLsizei h), (x, y, w, h), "(%d, %d, %d, %d)", x, y, w, h)
+TR_VOID(1, glScissor, (GLint x, GLint y, GLsizei w, GLsizei h), (x, y, w, h), "(%d, %d, %d, %d)", x, y, w, h)
+TR_VOID(1, glEnable, (GLenum cap), (cap), "(%s)", tr_name(cap))
+TR_VOID(1, glDisable, (GLenum cap), (cap), "(%s)", tr_name(cap))
+TR_VOID(1, glColorMask, (GLboolean r, GLboolean g, GLboolean b, GLboolean a), (r, g, b, a), "(%d, %d, %d, %d)", r, g, b, a)
+TR_VOID(0, glDrawArrays, (GLenum mode, GLint first, GLsizei count), (mode, first, count),
         "(%s, %d, %d)  [draw fb %u, program %u]", tr_mode(mode), first, count, tr_draw_fb, tr_program)
-TR_VOID(0, 1, glDrawElements, (GLenum mode, GLsizei count, GLenum type, const void *indices), (mode, count, type, indices),
+TR_VOID(0, glDrawElements, (GLenum mode, GLsizei count, GLenum type, const void *indices), (mode, count, type, indices),
         "(%s, %d)  [draw fb %u, program %u]", tr_mode(mode), count, tr_draw_fb, tr_program)
-TR_VOID(0, 1, glDrawElementsBaseVertex, (GLenum mode, GLsizei count, GLenum type, const void *indices, GLint base), (mode, count, type, indices, base),
+TR_VOID(0, glDrawElementsBaseVertex, (GLenum mode, GLsizei count, GLenum type, const void *indices, GLint base), (mode, count, type, indices, base),
         "(%s, %d, base %d)  [draw fb %u, program %u]", tr_mode(mode), count, base, tr_draw_fb, tr_program)
-TR_VOID(0, 1, glDrawRangeElementsBaseVertex, (GLenum mode, GLuint start, GLuint end, GLsizei count, GLenum type, const void *indices, GLint base),
+TR_VOID(0, glDrawRangeElementsBaseVertex, (GLenum mode, GLuint start, GLuint end, GLsizei count, GLenum type, const void *indices, GLint base),
         (mode, start, end, count, type, indices, base), "(%s, %d, base %d)  [draw fb %u, program %u]", tr_mode(mode), count, base, tr_draw_fb, tr_program)
-TR_VOID(1, 0, glBindTexture, (GLenum target, GLuint texture), (target, texture), "(%s, %u)", tr_name(target), texture)
-TR_VOID(1, 0, glTexImage2D, (GLenum target, GLint level, GLint iformat, GLsizei w, GLsizei h, GLint border, GLenum format, GLenum type, const void *pixels),
+TR_VOID(1, glBindTexture, (GLenum target, GLuint texture), (target, texture), "(%s, %u)", tr_name(target), texture)
+TR_VOID(1, glTexImage2D, (GLenum target, GLint level, GLint iformat, GLsizei w, GLsizei h, GLint border, GLenum format, GLenum type, const void *pixels),
         (target, level, iformat, w, h, border, format, type, pixels),
         "(%s, level %d, %s, %dx%d, %s, %s, %s)", tr_name(target), level, tr_name((GLenum)iformat), w, h, tr_name(format), tr_name(type), pixels ? "pixels" : "empty")
-TR_VOID(1, 0, glTexSubImage2D, (GLenum target, GLint level, GLint x, GLint y, GLsizei w, GLsizei h, GLenum format, GLenum type, const void *pixels),
+TR_VOID(1, glTexSubImage2D, (GLenum target, GLint level, GLint x, GLint y, GLsizei w, GLsizei h, GLenum format, GLenum type, const void *pixels),
         (target, level, x, y, w, h, format, type, pixels), "(%s, level %d, %d,%d %dx%d, %s, %s)", tr_name(target), level, x, y, w, h, tr_name(format), tr_name(type))
-TR_VOID(1, 0, glTexStorage2D, (GLenum target, GLsizei levels, GLenum iformat, GLsizei w, GLsizei h), (target, levels, iformat, w, h),
+TR_VOID(1, glTexStorage2D, (GLenum target, GLsizei levels, GLenum iformat, GLsizei w, GLsizei h), (target, levels, iformat, w, h),
         "(%s, %d levels, %s, %dx%d)", tr_name(target), levels, tr_name(iformat), w, h)
-TR_VOID(1, 0, glBindVertexArray, (GLuint array), (array), "(%u)", array)
-TR_VOID(1, 0, glEnableVertexAttribArray, (GLuint index), (index), "(%u)", index)
-TR_VOID(1, 0, glDisableVertexAttribArray, (GLuint index), (index), "(%u)", index)
-TR_VOID(1, 0, glBindBuffer, (GLenum target, GLuint buffer), (target, buffer), "(%s, %u)", tr_name(target), buffer)
-TR_VOID(1, 0, glBufferData, (GLenum target, ptrdiff_t size, const void *data, GLenum usage), (target, size, data, usage), "(%s, %ld bytes)", tr_name(target), (long)size)
-TR_VOID(1, 0, glBufferSubData, (GLenum target, ptrdiff_t offset, ptrdiff_t size, const void *data), (target, offset, size, data),
+TR_VOID(1, glBindVertexArray, (GLuint array), (array), "(%u)", array)
+TR_VOID(1, glEnableVertexAttribArray, (GLuint index), (index), "(%u)", index)
+TR_VOID(1, glDisableVertexAttribArray, (GLuint index), (index), "(%u)", index)
+TR_VOID(1, glBindBuffer, (GLenum target, GLuint buffer), (target, buffer), "(%s, %u)", tr_name(target), buffer)
+TR_VOID(1, glBufferData, (GLenum target, ptrdiff_t size, const void *data, GLenum usage), (target, size, data, usage), "(%s, %ld bytes)", tr_name(target), (long)size)
+TR_VOID(1, glBufferSubData, (GLenum target, ptrdiff_t offset, ptrdiff_t size, const void *data), (target, offset, size, data),
         "(%s, at %ld, %ld bytes)", tr_name(target), (long)offset, (long)size)
 
 static const struct { const char *name; void *real; retro_proc_address_t stand_in; } tr_table[] = {
@@ -699,14 +896,29 @@ static void tr_start(void) {
   OPTIONAL(tr_GetProgramInfoLog, "glGetProgramInfoLog");
   OPTIONAL(tr_GetIntegerv, "glGetIntegerv");
   OPTIONAL(tr_BindBuffer, "glBindBuffer");
+  OPTIONAL(tr_GetVertexAttribiv, "glGetVertexAttribiv");
+  OPTIONAL(tr_ValidateProgram, "glValidateProgram");
+  OPTIONAL(tr_GetActiveAttrib, "glGetActiveAttrib");
+  OPTIONAL(tr_GetAttribLocation, "glGetAttribLocation");
+  OPTIONAL(tr_GetActiveUniform, "glGetActiveUniform");
+  OPTIONAL(tr_GetUniformLocation, "glGetUniformLocation");
+  OPTIONAL(tr_GetUniformiv, "glGetUniformiv");
+  OPTIONAL(tr_GetBufferParameteriv, "glGetBufferParameteriv");
+  OPTIONAL(tr_IsEnabled, "glIsEnabled");
+  OPTIONAL(tr_GetFramebufferAttachmentParameteriv, "glGetFramebufferAttachmentParameteriv");
+  OPTIONAL(tr_GetTexLevelParameteriv, "glGetTexLevelParameteriv");
+  OPTIONAL(tr_GetRenderbufferParameteriv, "glGetRenderbufferParameteriv");
 #undef OPTIONAL
-  fprintf(stderr, "[gl] recording the core's OpenGL calls: its set-up, the first %ld frame(s) and the last one, then only failures\n", gl_trace);
+  fprintf(stderr, "[gl] recording the OpenGL calls the core makes through the player: its set-up, the first %ld frame(s)%s, then only failures\n",
+          gl_trace, test_frames ? " and the last one" : " and any frame asked for with F8");
+  fprintf(stderr, "[gl] (the old OpenGL 1.x calls, such as glDrawArrays and glClear, go straight to the system and can't be recorded;\n"
+                  "[gl]  an error from one of them is reported when the next recorded call arrives)\n");
 }
 
 static void tr_summary(void) {
   tr_flush();
-  fprintf(stderr, "[gl] summary: %u shader(s) compiled, %u failed; %u program(s) linked, %u failed; %u call(s) failed outside the recorded frames\n",
-          tr_shaders, tr_shader_fails, tr_programs, tr_program_fails, tr_failures);
+  fprintf(stderr, "[gl] summary: %u shader(s) compiled, %u failed; %u program(s) linked, %u failed; %u recorded call(s) failed outside the recorded frames; "
+                  "%u error(s) came from calls that can't be recorded\n", tr_shaders, tr_shader_fails, tr_programs, tr_program_fails, tr_failures, tr_unseen);
 }
 
 /* ---------- video ---------- */
@@ -1447,6 +1659,7 @@ int main(int argc, char **argv) {
         } else if (cmd && (k == SDLK_q || k == SDLK_w)) running = false;
         else if (k == SDLK_F5) save_state();
         else if (k == SDLK_F9) load_state();
+        else if (k == SDLK_F8 && gl_trace) tr_request = true;
         else if (cmd && k == SDLK_r) core_reset();
       }
     }
@@ -1455,12 +1668,15 @@ int main(int argc, char **argv) {
 
     frame_ready = false;
     frame_no++;
-    if (gl_trace) {
-      bool recorded = frame_no <= gl_trace || frame_no == test_frames;
-      tr_window(recorded ? "frame" : NULL, frame_no, recorded);
-    }
+    bool recorded = gl_trace && (frame_no <= gl_trace || frame_no == test_frames || tr_request);
+    if (tr_request) { tr_request = false; tr_failures = tr_unseen = tr_n_seen = 0; } /* start counting afresh */
+    if (gl_trace) tr_window(recorded ? "frame" : NULL, frame_no, recorded);
     core_run();
-    if (gl_trace) tr_window(NULL, 0, false);
+    if (gl_trace) {
+      tr_pending("the end of the frame");
+      if (recorded) tr_survey();
+      tr_window(NULL, 0, false);
+    }
     if (want_w) { create_hw_fbo(want_w, want_h); want_w = want_h = 0; }
     if (test_frames && frame_no == 1) peek_report("after frame 1");
 

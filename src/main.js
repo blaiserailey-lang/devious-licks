@@ -103,7 +103,7 @@ async function openGame(id, opts) {
   }
 }
 
-async function startGame(id, { reset = false } = {}) {
+async function startGame(id, { reset = false, diagnose = false } = {}) {
   const localGame = local.find(id);
   const game = localGame || library.find(id);
   if (!game) return;
@@ -111,7 +111,7 @@ async function startGame(id, { reset = false } = {}) {
   const options = await emulatorOptions(game, romPath);
   const native = !reset && nativeCoreFor(game);
   if (native) {
-    openNative(game, romPath, native, options);
+    openNative(game, romPath, native, options, diagnose);
     return;
   }
   const existing = playerWindows.get(id);
@@ -189,7 +189,7 @@ function tail(file, lines) {
   }
 }
 
-function openNative(game, romPath, native, options) {
+function openNative(game, romPath, native, options, diagnose) {
   const running = nativePlayers.get(game.id);
   if (running) {
     running.kill('SIGURG'); // already open: ask it to come to the front (harmless if it isn't listening yet)
@@ -207,6 +207,9 @@ function openNative(game, romPath, native, options) {
   ];
   if (fs.existsSync(PLAYER_ICON)) args.push('--icon', PLAYER_ICON);
   for (const [key, value] of Object.entries(options)) args.push('--option', `${key}=${value}`);
+  // Shift-click: the player also writes the emulator's graphics calls into
+  // the log (the first frames, every error, and one more frame per F8 press).
+  if (diagnose) args.push('--gl-trace', '3', '--gl-probe');
 
   // Everything the player and the emulator core print goes to a log file, so
   // there is something to look at when a game misbehaves.
@@ -214,7 +217,7 @@ function openNative(game, romPath, native, options) {
   try {
     fs.mkdirSync(path.dirname(logFile), { recursive: true });
     log = fs.openSync(logFile, 'w');
-    fs.writeSync(log, `Devious Licks ${app.getVersion()} on macOS ${process.getSystemVersion()} (${process.arch})\n${game.title} [${game.core}] ${JSON.stringify(options)}\n\n`);
+    fs.writeSync(log, `Devious Licks ${app.getVersion()} on macOS ${process.getSystemVersion()} (${process.arch})\n${game.title} [${game.core}] ${JSON.stringify(options)}${diagnose ? ' with the graphics recorder on' : ''}\n\n`);
   } catch {
     log = 'ignore';
   }
@@ -286,7 +289,7 @@ app.whenReady().then(async () => {
     return view();
   });
   ipcMain.handle('library:refresh', () => refresh());
-  ipcMain.handle('game:play', (_e, id, opts) => openGame(id, { reset: Boolean(opts && opts.reset) }));
+  ipcMain.handle('game:play', (_e, id, opts) => openGame(id, { reset: Boolean(opts && opts.reset), diagnose: Boolean(opts && opts.diagnose) }));
 
   createLibraryWindow();
   app.on('activate', () => {

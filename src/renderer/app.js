@@ -53,7 +53,7 @@ function card(game) {
       tags,
     ]),
   ]);
-  node.onclick = (e) => window.library.play(game.id, { reset: e.altKey });
+  node.onclick = (e) => window.library.play(game.id, { reset: e.altKey, diagnose: e.shiftKey });
   if (game.local) {
     const remove = el('span', { className: 'remove', title: 'Remove from library', textContent: '×' });
     remove.onclick = async (e) => {

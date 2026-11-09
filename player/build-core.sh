@@ -3,8 +3,8 @@
 # universal (Apple Silicon + Intel) libretro core into player/.build/core.
 # Runs on macOS (CI). Does nothing when it is already built.
 #
-# The source is the upstream repository at a pinned commit, plus the two small
-# patches below. Nothing else is changed.
+# The source is the upstream repository at a pinned commit, plus the three
+# small patches below. Nothing else is changed.
 set -uo pipefail
 cd "$(dirname "$0")"
 WORK="$PWD/.build"
@@ -48,6 +48,18 @@ if grep -q 'include <fp.h>' "$PNGPRIV"; then fail "the libpng patch did not appl
 # zlib: don't replace fdopen() with NULL, which also breaks <stdio.h>.
 sed -i '' -e 's/#if defined(MACOS) || defined(TARGET_OS_MAC)/#if defined(MACOS)/' "$ZUTIL" || fail "could not patch zlib"
 if grep -q 'defined(TARGET_OS_MAC)' "$ZUTIL"; then fail "the zlib patch did not apply"; fi
+# The renderer (GLideN64) switches on a vertex attribute for its rectangles
+# ("barycoords", used for edge smoothing) but only gives it data to read when
+# that feature is available, and this version of the core has the feature
+# turned off. An attribute that is on with nothing to read makes macOS reject
+# the drawing call (GL_INVALID_OPERATION), so every rectangle, including the
+# one that puts the finished frame on screen, was dropped: a black picture.
+# Other systems let it pass. Switch the attribute on only when it has data,
+# which is what the same file already does for triangles.
+DRAWER="$SRC/GLideN64/src/Graphics/OpenGLContext/opengl_BufferedDrawer.cpp"
+sed -i '' -e 's|enableVertexAttribArray(rectAttrib::barycoords, true);|enableVertexAttribArray(rectAttrib::barycoords, _glinfo.coverage);|' "$DRAWER" || fail "could not patch GLideN64"
+grep -q 'enableVertexAttribArray(rectAttrib::barycoords, _glinfo.coverage);' "$DRAWER" || fail "the GLideN64 patch did not apply"
+if grep -q 'enableVertexAttribArray(rectAttrib::barycoords, true);' "$DRAWER"; then fail "the GLideN64 patch left a copy behind"; fi
 
 # --- build, one architecture at a time
 # The core's C code predates today's compilers, which turned several old habits
