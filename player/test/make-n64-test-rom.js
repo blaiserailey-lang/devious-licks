@@ -6,12 +6,13 @@
 // It contains no Nintendo code: the short program below is written here, in
 // machine code, and sits where a real cartridge keeps its boot code. It fills
 // a 320x240 picture with four coloured quarters (red, green / blue, white),
-// points the video chip at it and then idles. Running it in the bundled N64
-// core checks the whole chain on a real Mac: core, OpenGL renderer and player.
+// points the video chip at it, leaves a few notes in memory for the self-test
+// and then idles. Running it in the bundled N64 core checks the whole chain on
+// a real Mac: core, OpenGL renderer and player.
 // (Emulators with a simulated boot ROM run it; a real console would not.)
 const fs = require('fs');
 
-const R = { zero: 0, a0: 4, t0: 8, t1: 9, t2: 10, t4: 12, t5: 13, t6: 14 };
+const R = { zero: 0, a0: 4, a1: 5, t0: 8, t1: 9, t2: 10, t3: 11, t4: 12, t5: 13, t6: 14 };
 const words = [];
 const labels = {};
 const branches = [];
@@ -20,6 +21,7 @@ const lui = (rt, imm) => emit(0x3c000000 | (rt << 16) | (imm & 0xffff));
 const ori = (rt, rs, imm) => emit(0x34000000 | (rs << 21) | (rt << 16) | (imm & 0xffff));
 const addiu = (rt, rs, imm) => emit(0x24000000 | (rs << 21) | (rt << 16) | (imm & 0xffff));
 const sw = (rt, offset, base) => emit(0xac000000 | (base << 21) | (rt << 16) | (offset & 0xffff));
+const lw = (rt, offset, base) => emit(0x8c000000 | (base << 21) | (rt << 16) | (offset & 0xffff));
 const sh = (rt, offset, base) => emit(0xa4000000 | (base << 21) | (rt << 16) | (offset & 0xffff));
 const nop = () => emit(0);
 const label = (name) => { labels[name] = words.length; };
@@ -36,6 +38,9 @@ const WIDTH = 320;
 const HEIGHT = 240;
 const FRAMEBUFFER = 0x00100000; // 1 MB into the console's memory
 const RED = 0xf801, GREEN = 0x07c1, BLUE = 0x003f, WHITE = 0xffff; // 5/5/5/1 colours
+const NOTES = 0x400;          // where the program leaves its notes (see below)
+const MARKER = 0xd1ceb00c;
+const READ_BACK = [0x00, 0x04, 0x08, 0x18, 0x24, 0x28, 0x30, 0x34]; // status, address, width, lines per frame, columns, lines, x scale, y scale
 
 // --- draw: two halves of 120 rows, each row 160 pixels of one colour then 160 of another
 lui(R.t0, 0xa000 | (FRAMEBUFFER >>> 16)); // t0 = where the next pixel goes
@@ -84,9 +89,18 @@ vi(0x30, 0x200);        // 320 pixels across
 vi(0x34, 0x400);        // 240 lines down
 vi(0x18, 0x0000020d);   // lines per frame: written last, this starts the frame clock
 
+// --- notes for the self-test, in memory at NOTES: a marker ("got this far"),
+// the video settings as the video chip reports them back, and a counter that
+// keeps climbing while the program idles
+lui(R.a1, 0xa000);
+li(R.t0, MARKER);
+sw(R.t0, NOTES, R.a1);
+READ_BACK.forEach((register, i) => { lw(R.t0, register, R.a0); sw(R.t0, NOTES + 4 + i * 4, R.a1); });
+ori(R.t3, R.zero, 0);
 label('idle');
+addiu(R.t3, R.t3, 1);
 beq(R.zero, R.zero, 'idle');
-nop();
+sw(R.t3, NOTES + 4 + READ_BACK.length * 4, R.a1); // (runs before the branch takes effect)
 
 for (const [at, target] of branches) words[at] = (words[at] | ((labels[target] - (at + 1)) & 0xffff)) >>> 0;
 if (words.length * 4 > 0xfc0) throw new Error('boot program too large');

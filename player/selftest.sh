@@ -3,7 +3,9 @@
 #   1. both halves of the player (Apple Silicon and Intel) load the N64 core;
 #   2. the player shows the right picture with a tiny stand-in core;
 #   3. the real N64 core boots a home-made test cartridge and shows the four
-#      coloured quarters that cartridge draws.
+#      coloured quarters that cartridge draws. If it doesn't, the run is
+#      repeated with the player's OpenGL recorder on, to show where the
+#      picture got lost.
 # The cartridge comes from test/make-n64-test-rom.js; no game is involved.
 #
 #   player/selftest.sh                 test player/dist (what build-mac.sh made)
@@ -19,6 +21,9 @@ N64="$DIR/mupen64plus_next_libretro.dylib"
 TESTCORE="$WORK/test/test_libretro.dylib"
 ICON="$ROOT/../build/icon.png"
 QUARTERS="--expect tl=ff0000 --expect tr=00ff00 --expect bl=0000ff --expect br=ffffff"
+# What the test cartridge leaves in the console's memory: its notes (a marker,
+# the video settings read back, a running counter) and one pixel per quarter.
+NOTES="--peek 400:10 --peek 1096a0 --peek 1097e0 --peek 11c2a0 --peek 11c3e0"
 NATIVE="$(uname -m)"
 failures=0
 
@@ -47,14 +52,24 @@ for a in arm64 x86_64; do
 done
 
 # run <label> <arch> <player arguments...>; returns the player's exit code
+# LOG_LINES=<n> shows up to that many lines of the run's log (default: the last 80)
 run() {
-  local label="$1" a="$2" code
+  local label="$1" a="$2" code lines
   shift 2
   echo "== $label"
   guard arch -"$a" "$PLAYER" "$@" --title "Self-test" --icon "$ICON" \
     --save-dir "$TMP/saves" --system-dir "$TMP/system" >"$TMP/run.log" 2>&1
   code=$?
-  tail -80 "$TMP/run.log" | cut -c1-300 | sed 's/^/   /'
+  lines="$(wc -l <"$TMP/run.log" | tr -d ' ')"
+  if [ -z "${LOG_LINES:-}" ]; then
+    tail -80 "$TMP/run.log" | cut -c1-300 | sed 's/^/   /'
+  elif [ "$lines" -le "$LOG_LINES" ]; then
+    cut -c1-240 "$TMP/run.log" | sed 's/^/   /'
+  else
+    head -n $((LOG_LINES / 3)) "$TMP/run.log" | cut -c1-240 | sed 's/^/   /'
+    echo "   ... ($((lines - LOG_LINES)) lines left out) ..."
+    tail -n $((LOG_LINES - LOG_LINES / 3)) "$TMP/run.log" | cut -c1-240 | sed 's/^/   /'
+  fi
   return $code
 }
 check() { # check <exit code>
@@ -88,12 +103,29 @@ for a in "$NATIVE" x86_64; do
     continue
   fi
   run "3. N64 core runs the test cartridge ($a)" "$a" --core "$N64" --rom "$TMP/dl-test-cart.z64" \
-    --option mupen64plus-CountPerOp=1 --frames 240 $QUARTERS
-  check $?
+    --option mupen64plus-CountPerOp=1 --frames 240 $QUARTERS $NOTES
+  code=$?
+  check "$code"
   if grep -q "faulted while shutting down" "$TMP/run.log"; then
     echo "::notice::The N64 core faulted while shutting down ($a). The player ignores that; saves are written first."
   fi
+  [ "$code" = 0 ] || : "${diagnose:=$a}"
 done
+
+if [ -n "${diagnose:-}" ]; then
+  echo "== The failed N64 run again, one emulator setting changed at a time ($diagnose)"
+  for variant in mupen64plus-EnableOverscan=Disabled mupen64plus-EnableCopyColorToRDRAM=Off \
+    mupen64plus-EnableCopyColorFromRDRAM=True mupen64plus-EnableNativeResFactor=1; do
+    guard arch -"$diagnose" "$PLAYER" --core "$N64" --rom "$TMP/dl-test-cart.z64" --title "Self-test" \
+      --save-dir "$TMP/saves" --system-dir "$TMP/system" --option mupen64plus-CountPerOp=1 --option "$variant" \
+      --frames 120 $QUARTERS >"$TMP/variant.log" 2>&1
+    echo "   $variant: exit code $?"
+    grep -E '^\[selftest\] (core|screen)' "$TMP/variant.log" | sed 's/^/      /'
+  done
+  LOG_LINES=600 run "The failed N64 run again with the OpenGL recorder on ($diagnose)" "$diagnose" --core "$N64" \
+    --rom "$TMP/dl-test-cart.z64" --option mupen64plus-CountPerOp=1 --frames 240 $QUARTERS $NOTES --gl-trace 2 --gl-probe
+  echo "   (recorded run: exit code $?)"
+fi
 
 if [ "$failures" != 0 ]; then
   echo "SELF-TEST FAILED ($failures)"
