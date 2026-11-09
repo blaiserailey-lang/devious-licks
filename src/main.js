@@ -81,12 +81,15 @@ function createLibraryWindow() {
   });
 }
 
-function openGame(id) {
+function openGame(id, { reset = false } = {}) {
   const localGame = local.find(id);
   const game = localGame || library.find(id);
   if (!game) return;
   const existing = playerWindows.get(id);
-  if (existing && !existing.isDestroyed()) return existing.focus();
+  if (existing && !existing.isDestroyed()) {
+    if (!reset) return existing.focus();
+    existing.destroy();
+  }
   const win = new BrowserWindow({
     width: 960,
     height: 760,
@@ -104,6 +107,7 @@ function openGame(id) {
     // Save files are tied to this id; it changes only if the ROM changes.
     saveId: `${game.id}-${(game.sha256 || '').slice(0, 10)}`,
   });
+  if (reset) q.set('reset', '1');
   win.loadURL(`app://app/src/renderer/player.html?${q}`);
   win.setMenuBarVisibility(false);
   playerWindows.set(id, win);
@@ -170,7 +174,7 @@ app.whenReady().then(async () => {
     return view();
   });
   ipcMain.handle('library:refresh', () => refresh());
-  ipcMain.handle('game:play', (_e, id) => openGame(id));
+  ipcMain.handle('game:play', (_e, id, opts) => openGame(id, { reset: Boolean(opts && opts.reset) }));
 
   createLibraryWindow();
   app.on('activate', () => {
