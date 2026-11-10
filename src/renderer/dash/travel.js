@@ -102,6 +102,8 @@ export function createTravel({ root, scene, stage, flight, home, art, raster, vi
       const r = smooth(0.85, 0.97, p);
       to.style.transform = `scale(${0.94 + 0.06 * easeOut(r)})`;
       to.style.opacity = String(r);
+      // (from a screen other than home, on the way to Games with a game just added: that screen fades out)
+      if (t.from !== 'home') from.style.opacity = String(1 - smooth(0, 0.16, p));
     } else {
       from.style.transformOrigin = '53.25% 43%';
       from.style.transform = `scale(${1 - 0.95 * easeOut(p / 0.19)})`;
@@ -113,7 +115,7 @@ export function createTravel({ root, scene, stage, flight, home, art, raster, vi
       // the stage (the 16:9 picture in the middle of the window), in the canvas's own measure
       const { x: sx, y: sy, w: sw, h: sh } = t.stage;
       ctx.clearRect(0, 0, w, h);
-      raster.paint(ctx, p, t.back, w, h);
+      if (t.back || t.from === 'home') raster.paint(ctx, p, t.back, w, h); // the home hub, when the flight leaves from it or ends at it
       if (t.back) {
         const pass = smooth(0.23, 0.38, p) * (1 - smooth(0.66, 0.78, p));
         if (pass > 0) {
@@ -220,7 +222,7 @@ export function createTravel({ root, scene, stage, flight, home, art, raster, vi
     const laid = stage.getBoundingClientRect();
     const box = laid.width ? laid : bounds;
     bakeGlimpse();
-    raster.bake();
+    if (back || from === 'home') raster.bake();
     home.style.visibility = 'hidden';
     transition = {
       from, to, back, p: 0, last: performance.now(), duration: back ? HOME_MS : OUT_MS, reverse: false,

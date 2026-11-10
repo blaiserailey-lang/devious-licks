@@ -258,14 +258,14 @@ body { -webkit-user-select: none; user-select: none; }
   position: absolute; left: 8%; right: 8%; bottom: 7%; z-index: 250;
   display: flex; justify-content: space-between; align-items: center; pointer-events: none;
 }
-.dn-prompts { display: flex; align-items: center; gap: clamp(12px, 2.2cqw, 36px); }
+.dn-prompts { flex: none; display: flex; align-items: center; gap: clamp(12px, 2.2cqw, 36px); }
 .dn-library:not([data-screen=home]) .dn-game-select,
 .dn-library:not([data-screen=home]) .dn-game-remove,
 .dn-library:not([data-screen=home]) .dn-game-picture { visibility: hidden; }
 
-/* Which game the cover in front is: one quiet block between the prompts. */
+/* Which game the cover in front is: one quiet block between the prompts (it gets the room they leave). */
 .dc-info {
-  position: absolute; left: 32%; right: 32%; bottom: 7%; z-index: 240; min-height: clamp(42px, 4.4cqw, 68px);
+  flex: 1 1 0; min-width: 0; padding: 0 clamp(10px, 1.4cqw, 24px); min-height: clamp(42px, 4.4cqw, 68px);
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
   text-align: center; pointer-events: none;
 }
@@ -316,12 +316,20 @@ body { -webkit-user-select: none; user-select: none; }
 }
 .dn-titlebar button, .dn-titlebar input { -webkit-app-region: no-drag; }
 .dn-status { font: 11px monospace; letter-spacing: .5px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dn-status.error { color: var(--warn); }
+/* An error stays until the next refresh and has to be readable in full: it wraps, below the strip if need be. */
+.dn-status.error {
+  color: var(--warn); white-space: normal; overflow: visible; align-self: flex-start; margin-top: 7px; line-height: 14px;
+  background: #020b01d9; box-shadow: 0 0 0 4px #020b01d9; border-radius: 2px; pointer-events: none;
+}
 
 .dn-messages {
   position: absolute; top: calc(var(--titlebar) + 8px); left: 16px; right: 16px; z-index: 450;
   display: flex; flex-direction: column; align-items: flex-end; gap: 8px; pointer-events: none;
 }
+/* On Games the top right corner is the search field's: messages go below it. */
+#dash[data-page=games] .dn-messages { top: calc(var(--titlebar) + 40px); }
+/* On the list screens the rows are at the top: messages go to the bottom right, beside B BACK. */
+#dash:is([data-page=rom], [data-page=friends], [data-page=settings]) .dn-messages { top: auto; bottom: 14px; flex-direction: column-reverse; }
 .dn-notice, .dn-toast {
   pointer-events: auto; max-width: min(560px, 100%); padding: 11px 14px;
   background: #041500f2; border: 1px solid #7fd62a; border-left: 4px solid var(--acid); border-radius: 3px;
@@ -353,7 +361,6 @@ body { -webkit-user-select: none; user-select: none; }
 /* ---------- small windows ---------- */
 @media (max-width: 900px) {
   .dn-panel-body { padding-left: 9%; padding-right: 9%; }
-  .dc-info { left: 30%; right: 30%; }
   .dn-library-controls { left: 5%; right: 5%; }
   .dn-panel .dn-back { left: 5%; }
   .dc-info-desc { display: none; }

@@ -17,7 +17,8 @@ import { createInput } from './input.js';
 
 export { consoleName };
 
-// hooks: play(game, {reset, diagnose}) -> promise; remove(game); picture(game);
+// hooks: play(game, {reset, diagnose}) -> promise; failed(text) (a game did not
+//        start and the "Starting" screen is no longer there to say so); remove(game); picture(game);
 //        filter(delta) (another console); find(text) (the search field changed)
 export function start(hooks) {
   const root = document.getElementById('dash');
@@ -104,10 +105,13 @@ export function start(hooks) {
           leaveTimer = setTimeout(() => current() && carousel.close(true), Math.max(2600, 3400 - (performance.now() - began)));
         },
         (err) => {
-          if (!current()) return;
+          const text = `${game.title} couldn't be started: ${(err && err.message) || err}`;
+          // A game that did not start always says so. When its "Starting" screen
+          // is gone (B was pressed, the library was redrawn), in a message.
+          if (!current()) return hooks.failed(text);
           gameScreen.classList.add('error');
           $('.dc-game-eyebrow').textContent = 'NOT STARTED';
-          $('.dc-game-text').textContent = `${game.title} couldn't be started: ${(err && err.message) || err}`;
+          $('.dc-game-text').textContent = text;
         }
       );
   }
@@ -127,7 +131,10 @@ export function start(hooks) {
     const list = rows();
     if (!list.length) return;
     const at = list.indexOf(current[page]);
-    const next = list[clamp((at < 0 ? 0 : at) + (at < 0 ? 0 : delta), 0, list.length - 1)];
+    let i = clamp((at < 0 ? 0 : at) + (at < 0 ? 0 : delta), 0, list.length - 1);
+    while (list[i].disabled && list[i + delta]) i += delta; // a switched-off row (Volume with the sound off) is stepped over
+    if (list[i].disabled && at >= 0) i = at;
+    const next = list[i];
     if (next !== current[page]) cue('focus');
     setRow(next);
   }
@@ -231,7 +238,7 @@ export function start(hooks) {
     } else if (key === 'ArrowUp' || key === 'ArrowDown') moveRow(forward ? 1 : -1);
     else {
       const row = current[page];
-      if (row && row.type === 'range' && rows().includes(row)) {
+      if (row && !row.disabled && row.type === 'range' && rows().includes(row)) {
         const next = clamp(Number(row.value) + (forward ? 1 : -1) * Number(row.step || 1), Number(row.min), Number(row.max));
         if (next !== Number(row.value)) {
           row.value = String(next);
@@ -264,8 +271,19 @@ export function start(hooks) {
   createInput({ direction, select, back, remove, picture, find, jump });
 
   // ----- clicks -----
+  // Only a pointer that really moved chooses a menu item. (When the home
+  // screen comes back, the browser tells whatever lies under a resting
+  // pointer that the pointer has "entered" it; that is not a choice.)
+  const pointerAt = { x: NaN, y: NaN };
+  window.addEventListener('pointermove', (e) => {
+    pointerAt.x = e.screenX;
+    pointerAt.y = e.screenY;
+  });
   items.forEach((b, i) => {
-    b.addEventListener('pointerenter', () => choose(i));
+    b.addEventListener('pointermove', (e) => {
+      if (e.screenX === pointerAt.x && e.screenY === pointerAt.y) return;
+      choose(i);
+    });
     b.addEventListener('focus', () => choose(i));
     b.addEventListener('click', () => {
       choose(i);
@@ -377,7 +395,13 @@ export function start(hooks) {
     // { total, filter, consoles, query }.
     setGames(games, about, focusId) {
       info = about;
+      // (it stays when its game is still there; otherwise what it said goes into a message)
+      const lost = carousel.screen !== 'home' && gameScreen.classList.contains('error') ? $('.dc-game-text').textContent : '';
       carousel.setGames(games, focusId);
+      if (lost && carousel.screen === 'home') {
+        gameScreen.classList.remove('error');
+        hooks.failed(lost);
+      }
       const empty = $('#empty');
       empty.hidden = games.length > 0;
       if (!games.length) {

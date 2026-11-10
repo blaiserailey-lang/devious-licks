@@ -47,6 +47,11 @@ function showStatus(text, isError = false) {
 let toastTimer;
 function toast(text, isError = false) {
   const t = $('toast');
+  // (an error that is still up is not wiped by the next piece of news: both are shown)
+  if (!t.hidden && t.classList.contains('error') && !isError && !t.textContent.includes(text)) {
+    text = `${t.textContent} · ${text}`;
+    isError = true;
+  }
   t.textContent = text;
   t.classList.toggle('error', isError);
   t.hidden = false;
@@ -324,6 +329,7 @@ async function startDashboard() {
   consoleName = module.consoleName;
   dash = module.start({
     play,
+    failed: (text) => toast(text, true),
     remove: removeLocal,
     picture: (game) => setCover(game.id),
     // Up and Down on the Games screen: one console at a time, then all again.

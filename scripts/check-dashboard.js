@@ -67,7 +67,8 @@ function fakeLibrary({ games, version, options }) {
     return c.toDataURL('image/png');
   };
   const calls = [];
-  const fake = { games: null, playError: null, getError: null, nextUpdate: null, options };
+  const fake = { games: null, playError: null, playDelay: 0, refreshDelay: 0, refreshFailed: [], getError: null, nextUpdate: null, options };
+  const wait = (ms) => (ms ? new Promise((r) => setTimeout(r, ms)) : null);
   window.__calls = calls;
   window.__fake = fake;
   window.__picture = picture;
@@ -90,10 +91,12 @@ function fakeLibrary({ games, version, options }) {
     },
     refresh: async () => {
       calls.push(['refresh']);
-      return { ...view(), summary: { added: [], updated: [], removed: [], failed: [] } };
+      await wait(fake.refreshDelay);
+      return { ...view(), summary: { added: [], updated: [], removed: [], failed: fake.refreshFailed } };
     },
     play: async (id, opts) => {
       calls.push(['play', id, opts]);
+      await wait(fake.playDelay);
       if (fake.playError) throw new Error(fake.playError);
     },
     addLocal: async (files) => {
@@ -164,6 +167,7 @@ const CATALOG_3 = [
   { id: 'wide', title: 'Wide Load', core: 'segaMD', art: [900, 500, 210] },
   { id: 'mine', title: 'My Own Game', core: 'n64', local: true, art: [512, 720, 280] },
 ];
+const LONG_TITLE = 'Legend of Zelda, The - Ocarina of Time (USA) (Rev 2)';
 const CATALOG_30 = Array.from({ length: 30 }, (_, i) => ({
   id: `g${i + 1}`,
   title: `Game Number ${i + 1}`,
@@ -691,7 +695,8 @@ function check(what, ok, detail) {
 
   for (const [width, height, name] of [[760, 520, 'small'], [1920, 1080, 'large'], [1440, 900, 'mac'], [1280, 748, 'default']]) {
     await scene(`everything fits in a ${width} by ${height} window`, async () => {
-      const w = await open({ width, height, games: CATALOG_30, reducedMotion: 'reduce' });
+      // (the fourth game, one added from a file, has the kind of name a game file gives it)
+      const w = await open({ width, height, games: CATALOG_30.map((g) => (g.id === 'g4' ? { ...g, title: LONG_TITLE } : g)), reducedMotion: 'reduce' });
       await w.page.waitForFunction(() => window.__calls.some((c) => c[0] === 'up'));
       // Is every one of these inside the window, and none on top of another?
       const fits = (selectors) => w.page.evaluate((selectors) => {
@@ -875,6 +880,264 @@ function check(what, ok, detail) {
     const settings = await frames(600);
     check('Settings: nothing is animated at all', settings <= 1, settings);
     await w.context.close();
+  });
+
+  // ----- what a review of the first version found -----
+
+  await scene('a game that does not start always ends with a message in sight', async () => {
+    const w = await open();
+    await w.page.waitForFunction(() => window.__calls.some((c) => c[0] === 'up'));
+    await w.goTo('games');
+    const state = () => w.page.evaluate(() => ({ screen: document.querySelector('.dn-library').dataset.screen, onScreen: !document.querySelector('.dc-game-screen').hidden && document.querySelector('.dc-game-screen').classList.contains('error') ? document.querySelector('.dc-game-text').textContent : '', toast: document.getElementById('toast').hidden ? '' : document.getElementById('toast').textContent }));
+    const said = (st) => /Neon Outrun couldn't be started: the game file is missing/.test(st.onScreen) || /Neon Outrun couldn't be started: the game file is missing/.test(st.toast);
+    const rail = () => w.page.waitForFunction(() => document.querySelector('.dn-library').dataset.screen === 'home');
+    const quiet = () => w.page.evaluate(() => (document.getElementById('toast').hidden = true));
+    // 1. The start fails; then a refresh ends and the library is drawn again.
+    await w.page.evaluate(() => (window.__fake.playError = 'the game file is missing'));
+    await w.page.keyboard.press('Enter');
+    await w.page.waitForSelector('.dc-game-screen.error:not([hidden])');
+    await w.page.keyboard.press('Control+r');
+    await w.page.waitForFunction(() => window.__calls.filter((c) => c[0] === 'refresh').length === 2 && !document.getElementById('refresh').disabled);
+    await w.page.waitForTimeout(100);
+    let st = await state();
+    check('a refresh that ends while "Not started" is up leaves the message in sight', said(st), st);
+    check('...on its screen, which still waits for B', st.screen === 'game' && Boolean(st.onScreen), st);
+    await w.page.keyboard.press('Escape');
+    await rail();
+    await quiet();
+    // 2. The start fails late, after a redraw. (The refresh is slow and ends first.)
+    await w.page.evaluate(() => Object.assign(window.__fake, { playDelay: 1200, refreshDelay: 300 }));
+    await w.page.keyboard.press('Enter');
+    await w.page.keyboard.press('Control+r');
+    await w.page.waitForFunction(() => window.__calls.filter((c) => c[0] === 'refresh').length === 3 && !document.getElementById('refresh').disabled);
+    await w.page.waitForTimeout(1500);
+    st = await state();
+    check('a start that fails after the library was redrawn still says so', said(st), st);
+    await w.page.keyboard.press('Escape');
+    await rail();
+    await quiet();
+    // 3. B before a slow start fails.
+    await w.page.keyboard.press('Enter');
+    await w.page.waitForTimeout(150);
+    await w.page.keyboard.press('Escape');
+    await rail();
+    await w.page.waitForTimeout(1400);
+    st = await state();
+    check('B before a slow start fails: the failure is still reported, in a message', /Neon Outrun couldn't be started: the game file is missing/.test(st.toast) && st.screen === 'home', st);
+    await w.shot('22-start-failed-after-back');
+    await quiet();
+    // 4. "Not started" is up, and a game dropped on the window takes its place: both are said.
+    await w.page.evaluate(() => Object.assign(window.__fake, { playDelay: 0, refreshDelay: 0 }));
+    await w.page.keyboard.press('Enter');
+    await w.page.waitForSelector('.dc-game-screen.error:not([hidden])');
+    await w.page.evaluate(() => {
+      const data = new DataTransfer();
+      data.items.add(new File([new Uint8Array(64)], 'Late Arrival.z64'));
+      document.getElementById('dash').dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: data }));
+    });
+    await w.page.waitForFunction(() => document.querySelector('.dc-cover[aria-pressed=true]').dataset.id === 'local-late-arrival');
+    await w.page.waitForTimeout(100);
+    st = await state();
+    check('a redraw that replaces the "Not started" screen moves what it said into a message, next to the news', /couldn't be started: the game file is missing/.test(st.toast) && /Added Late Arrival/.test(st.toast) && st.screen === 'home', st);
+    // 5. The same game, changed under a start that is still running (it got a picture): the screen stays and ends well.
+    await quiet();
+    await w.page.evaluate(() => Object.assign(window.__fake, { playError: null, playDelay: 900 }));
+    await w.page.keyboard.press('Enter');
+    await w.page.waitForTimeout(200);
+    await w.page.evaluate(() => {
+      const data = new DataTransfer();
+      data.items.add(new File([new Uint8Array(64)], 'box.png', { type: 'image/png' }));
+      document.querySelector('.dc-rail').dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: data }));
+    });
+    await w.page.waitForFunction(() => /opens in its own window/.test(document.querySelector('.dc-game-text').textContent) && !document.querySelector('.dc-game-screen').hidden, null, { timeout: 4000 });
+    await w.page.waitForFunction(() => document.querySelector('.dn-library').dataset.screen === 'home', null, { timeout: 7000 });
+    check('a start that outlives a redraw of its own game ends on the rail, on that game, with its new picture', (await w.front()) === 'local-late-arrival' && (await w.page.evaluate(() => Boolean(document.querySelector('.dc-cover[aria-pressed=true] .dc-art') && document.activeElement.dataset.id === 'local-late-arrival'))), await w.front());
+    await w.context.close();
+  });
+
+  await scene('a refresh error can be read in full, at the smallest window too', async () => {
+    for (const [width, height] of [[760, 520], [1280, 748]]) {
+      const w = await open({ width, height });
+      await w.page.waitForFunction(() => window.__calls.some((c) => c[0] === 'up'));
+      await w.page.evaluate(() => (window.__fake.refreshFailed = ['Neon Outrun: Could not download file (HTTP 503)', 'Rift Breaker: ROM download was corrupted (hash mismatch)', 'Wide Load: Could not download file (HTTP 503)']));
+      await w.page.keyboard.press('Control+r');
+      await w.page.waitForFunction(() => /couldn't update/.test(document.getElementById('status').textContent));
+      const seen = await w.page.evaluate(() => {
+        const s = document.getElementById('status');
+        const r = s.getBoundingClientRect();
+        return { cut: s.scrollWidth > s.clientWidth + 1, lines: Math.round(r.height / 14), inside: r.left >= 0 && r.right <= innerWidth + 0.5 && r.bottom <= innerHeight, text: s.textContent.length };
+      });
+      check(`${width} wide: the whole text is shown, on as many lines as it takes`, !seen.cut && seen.lines >= 2 && seen.inside, seen);
+      if (width === 760) await w.shot('23-small-refresh-error');
+      await w.context.close();
+    }
+  });
+
+  await scene('from Load ROM to Games with a new game: the Load ROM screen does not stay in the picture', async () => {
+    const w = await open();
+    await w.goTo('rom');
+    // Looks at every frame of the flight: the screen left behind, and what is painted over it early on.
+    const watch = w.page.evaluate(() => new Promise((resolve) => {
+      const dash = document.getElementById('dash');
+      const rom = document.querySelector('[data-view=rom]');
+      const flight = document.querySelector('.dn-flight');
+      const out = { started: false, romSeenAfterFifth: 0, paintedBeforeCell: 0, frames: 0 };
+      const t0 = performance.now();
+      (function look() {
+        const p = Number(dash.dataset.flightProgress || -1);
+        if (dash.dataset.transitioning) {
+          out.started = true;
+          out.frames++;
+          if (p > 0.2 && !rom.hidden && Number(getComputedStyle(rom).opacity) > 0.02) out.romSeenAfterFifth++;
+          if (p > 0.05 && p < 0.28 && flight.width > 1) {
+            const data = flight.getContext('2d').getImageData(0, 0, flight.width, flight.height).data;
+            let alpha = 0;
+            for (let i = 3; i < data.length; i += 4 * 97) alpha += data[i];
+            if (alpha > 0) out.paintedBeforeCell++;
+          }
+        } else if (out.started || performance.now() - t0 > 6000) return resolve(out);
+        requestAnimationFrame(look);
+      })();
+    }));
+    await w.page.keyboard.press('Enter');
+    const seen = await watch;
+    await w.at('games');
+    check('there is a flight', seen.started && seen.frames > 5, seen);
+    check('the Load ROM screen has faded out within the first fifth of it', seen.romSeenAfterFifth === 0, seen);
+    check('the home hub (which was not on screen) is not flown past', seen.paintedBeforeCell === 0, seen);
+    check('the new game is in front and focused at the end', (await w.front()) === 'local-picked-game' && (await w.page.evaluate(() => document.activeElement.dataset.id)) === 'local-picked-game');
+    await w.context.close();
+  });
+
+  await scene('a press on a box that is let go elsewhere does not leave the rail following the mouse', async () => {
+    const w = await open();
+    await w.goTo('games');
+    await w.settled();
+    const box = await w.page.evaluate(() => {
+      const r = document.querySelector('.dc-cover[aria-pressed=true]').getBoundingClientRect();
+      const b = document.querySelector('.dn-home-back').getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2, bx: b.left + b.width / 2, by: b.top + b.height / 2 };
+    });
+    // Press on the front box, move straight down, let go on the B BACK prompt (which is not part of the rail).
+    await w.page.mouse.move(box.x, box.y);
+    await w.page.mouse.down();
+    await w.page.mouse.move(box.x, box.y + 60, { steps: 4 });
+    await w.page.mouse.move(box.bx, box.by);
+    const outside = await w.page.evaluate(({ x, y }) => !document.querySelector('.dc-rail').contains(document.elementFromPoint(x, y)), { x: box.bx, y: box.by });
+    await w.page.mouse.up();
+    await w.page.waitForTimeout(100);
+    check('(the button comes up outside the rail)', outside);
+    const page0 = await w.page.evaluate(() => document.getElementById('dash').dataset.page);
+    await w.page.mouse.move(box.x + 250, box.y, { steps: 6 });
+    await w.page.mouse.move(box.x - 250, box.y, { steps: 10 });
+    await w.settled();
+    check('moving the mouse over the rail afterwards, no button down, turns nothing', (await w.front()) === 'neon' && page0 === 'games', [await w.front(), page0]);
+    // The button comes up where no event tells of it (the window's drag strip in the real app).
+    await w.page.evaluate(({ x, y }) => {
+      const rail = document.querySelector('.dc-rail');
+      const at = (type, dx, buttons) => rail.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 7, button: type === 'pointerdown' ? 0 : -1, buttons, clientX: x + dx, clientY: y }));
+      at('pointerdown', 0, 1);
+      for (const dx of [-40, -120, -200, -280]) at('pointermove', dx, 0);
+    }, box);
+    await w.settled();
+    check('...nor when the release was never heard of at all', (await w.front()) === 'neon', await w.front());
+    // An ordinary drag still turns the rail.
+    await w.page.mouse.move(box.x, box.y);
+    await w.page.mouse.down();
+    await w.page.mouse.move(box.x - 300, box.y, { steps: 8 });
+    await w.page.mouse.up();
+    await w.settled();
+    check('a real drag still does', (await w.front()) !== 'neon', await w.front());
+    await w.context.close();
+  });
+
+  await scene('a mouse pointer resting on the menu does not take the choice when home comes back', async () => {
+    const w = await open();
+    await w.page.waitForFunction(() => window.__calls.some((c) => c[0] === 'up'));
+    const bar = await w.page.evaluate(() => {
+      const r = document.querySelector('.dn-item[data-page=friends] .dn-bar').getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    });
+    const chosen = () => w.page.evaluate(() => document.querySelector('.dn-item[aria-pressed=true]').dataset.page);
+    await w.page.mouse.move(bar.x - 30, bar.y - 4);
+    await w.page.mouse.move(bar.x, bar.y, { steps: 3 });
+    check('a pointer that moves onto an item chooses it', (await chosen()) === 'friends', await chosen());
+    await w.page.keyboard.press('ArrowUp');
+    await w.page.keyboard.press('ArrowUp');
+    check('the keys move on from there', (await chosen()) === 'games');
+    await w.page.keyboard.press('Enter');
+    await w.at('games');
+    await w.page.keyboard.press('Escape');
+    await w.at('home');
+    await w.page.waitForTimeout(400);
+    const after = await w.page.evaluate(() => ({ chosen: document.querySelector('.dn-item[aria-pressed=true]').dataset.page, focus: document.activeElement.dataset.page }));
+    check('home again: still Games, chosen and focused, though the pointer rests on Friends', after.chosen === 'games' && after.focus === 'games', after);
+    await w.page.keyboard.press('Enter');
+    await w.at('games');
+    await w.context.close();
+  });
+
+  await scene('Settings with the sound off: Volume is stepped over and cannot be changed', async () => {
+    const w = await open({ reducedMotion: 'reduce' });
+    await w.goTo('settings');
+    await w.page.keyboard.press('ArrowDown');
+    await w.page.keyboard.press('ArrowDown');
+    await w.page.keyboard.press('Enter');
+    check('(Sound is off)', (await w.page.textContent('#sound')) === 'Off' && (await w.page.evaluate(() => document.getElementById('volume').disabled)));
+    await w.page.keyboard.press('ArrowDown');
+    const down = await w.page.evaluate(() => ({ focus: document.activeElement.id, current: [...document.querySelectorAll('[data-view=settings] [data-current]')].map((e) => e.id || e.className) }));
+    check('Down from Sound goes to Motion', down.focus === 'motion' && down.current.join() === 'motion', down);
+    await w.page.keyboard.press('ArrowUp');
+    check('Up from Motion goes back to Sound', (await w.page.evaluate(() => document.activeElement.id)) === 'sound');
+    await w.page.keyboard.press('ArrowLeft');
+    await w.page.keyboard.press('ArrowLeft');
+    await w.page.keyboard.press('ArrowRight');
+    const kept = await w.page.evaluate(() => ({ value: document.getElementById('volume').value, saved: JSON.parse(localStorage.getItem('devious-licks.dashboard')).volume }));
+    check('Left and Right leave the volume alone', kept.value === '25' && kept.saved === 25, kept);
+    await w.page.keyboard.press('Enter');
+    await w.page.keyboard.press('ArrowDown');
+    check('with the sound on again, Down lands on Volume', (await w.page.evaluate(() => document.activeElement.id)) === 'volume');
+    await w.context.close();
+  });
+
+  await scene('messages keep clear of the search field on Games and of the rows on Settings', async () => {
+    for (const [width, height, name] of [[760, 520, 'small'], [1280, 748, 'default']]) {
+      const w = await open({ width, height, games: CATALOG_30, reducedMotion: 'reduce' });
+      await w.page.waitForFunction(() => window.__calls.some((c) => c[0] === 'up'));
+      const apart = (a, b) => w.page.evaluate(([a, b]) => {
+        const [p, q] = [document.querySelector(a).getBoundingClientRect(), document.querySelector(b).getBoundingClientRect()];
+        const c = document.elementFromPoint(q.left + q.width / 2, q.top + q.height / 2);
+        return { clear: !(p.left < q.right && q.left < p.right && p.top < q.bottom && q.top < p.bottom) && p.width > 0 && q.width > 0, onTop: c ? c.id || c.className : null, inside: p.top >= 0 && p.bottom <= innerHeight && p.left >= 0 && p.right <= innerWidth };
+      }, [a, b]);
+      await w.goTo('games');
+      await w.page.keyboard.press('Control+r');
+      await w.page.waitForFunction(() => !document.getElementById('toast').hidden);
+      await w.page.keyboard.press('/');
+      await w.page.keyboard.type('number 1');
+      let seen = await apart('#toast', '#search');
+      check(`${width} wide, Games: a toast does not lie on the search field being typed in`, seen.clear && seen.onTop === 'search' && seen.inside, seen);
+      await w.page.evaluate(() => window.__fake.setUpdate({ phase: 'none', passedOver: { version: '9.9.8', why: 'it was set aside after it did not start' } }));
+      seen = await apart('#notice', '#search');
+      const chip = await apart('#notice', '#filter');
+      check(`${width} wide, Games: nor does a notice, on the field or on the console chip`, seen.clear && seen.onTop === 'search' && chip.clear, [seen, chip]);
+      await w.shot(`18-${name}-toast-with-search`);
+      await w.page.click('#notice-close');
+      await w.page.keyboard.press('Escape');
+      await w.page.keyboard.press('Escape');
+      check('(home again)', (await w.page.evaluate(() => document.getElementById('dash').dataset.page)) === 'home');
+      // Settings: the notice that says "Click Try ... again" must not lie on that button.
+      await w.goTo('settings');
+      await w.page.evaluate(() => (window.__fake.nextUpdate = { phase: 'available', latest: '0.4.1', failedBefore: true, why: 'it was set aside after it did not start' }));
+      await w.page.keyboard.press('Enter');
+      await w.page.waitForFunction(() => !document.getElementById('notice').hidden);
+      for (const row of ['#update', '#refresh', '#sound', '#volume', '#motion', '[data-view=settings] .dn-back', '[data-view=settings] .dn-panel-title']) {
+        seen = await apart('#notice', row);
+        check(`${width} wide, Settings: the update notice keeps clear of ${row}`, seen.clear && seen.inside, seen);
+      }
+      check('...and the button it speaks of reads as it says', (await w.page.textContent('#update')).trim() === 'Try 0.4.1 again' && /Try 0\.4\.1 again/.test(await w.page.textContent('#notice-text')));
+      await w.shot(`19-${name}-update-notice`);
+      await w.context.close();
+    }
   });
 
   await scene('a sound file that is missing means no sound, not a broken window', async () => {

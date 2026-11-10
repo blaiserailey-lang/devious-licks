@@ -68,6 +68,7 @@ export function createCarousel({ root, library, onFocus, onOpen, onCue }) {
   let view = 'home'; // home | launching | game | returning
   let launchAnimation = null;
   let launchToken = 0;
+  let landing = null; // what ends the zoom that is running (out to the "Starting" screen, or back from it)
 
   const count = () => games.length;
   const wrap = (n) => ((n % count()) + count()) % count();
@@ -75,8 +76,8 @@ export function createCarousel({ root, library, onFocus, onOpen, onCue }) {
   const distance = (n) => (count() ? ((((n + count() / 2) % count()) + count()) % count()) - count() / 2 : 0);
   const busy = () => view !== 'home' || Boolean(root.dataset.transitioning);
 
-  function draw() {
-    if (view !== 'home') return;
+  function draw(always = false) {
+    if (view !== 'home' && !always) return;
     covers.forEach((b, i) => {
       const d = distance(i - position);
       const a = Math.abs(d);
@@ -188,6 +189,7 @@ export function createCarousel({ root, library, onFocus, onOpen, onCue }) {
       library.dataset.screen = 'game';
       gameScreen.hidden = false;
     };
+    landing = complete;
     onOpen(game, mods || {}, () => token === launchToken);
     if (still() || !cover.animate) return complete();
     launchAnimation = cover.animate(
@@ -223,6 +225,7 @@ export function createCarousel({ root, library, onFocus, onOpen, onCue }) {
       if (games[index]) announcement.textContent = `Back to ${games[index].title}`;
     };
     if (wasLaunching || still() || !cover || !cover.animate || !awake()) return finish();
+    landing = finish;
     view = 'returning';
     library.dataset.screen = 'returning';
     gameScreen.hidden = true;
@@ -248,8 +251,13 @@ export function createCarousel({ root, library, onFocus, onOpen, onCue }) {
     const keep = focusId || (games[index] && games[index].id);
     const before = index;
     const old = new Map(covers.map((b, i) => [b.dataset.key, b]));
-    // (should the list change while a game is starting: back to the rail first)
-    if (view !== 'home') {
+    // While a game is starting, its "Starting" screen stays through a redraw
+    // (a refresh that ends just then must not take away what it says), as
+    // long as the game is still there and no other game is asked to the front.
+    const starting = view !== 'home' && !focusId ? games[index] : null;
+    const stays = Boolean(starting && list.some((g) => g.id === starting.id));
+    const startingCover = stays ? covers[index] : null;
+    if (view !== 'home' && !stays) {
       ++launchToken;
       if (launchAnimation) launchAnimation.cancel();
       launchAnimation = null;
@@ -296,10 +304,19 @@ export function createCarousel({ root, library, onFocus, onOpen, onCue }) {
     cancelAnimationFrame(frame);
     frame = 0;
     mark();
-    draw();
-    if (games[index]) announcement.textContent = games[index].title;
+    draw(true);
+    if (stays) {
+      // (its box may be a new one: the zoom that ran on the old one is over)
+      if (covers[index] !== startingCover && (view === 'launching' || view === 'returning')) {
+        if (launchAnimation) launchAnimation.cancel();
+        launchAnimation = null;
+        landing();
+      }
+      if (view !== 'home') covers[index].classList.add('is-launching');
+    }
+    if (games[index] && view === 'home') announcement.textContent = games[index].title;
     onFocus(games[index] || null, index);
-    if (hadFocus && games[index] && !library.hidden) covers[index].focus({ preventScroll: true });
+    if (hadFocus && games[index] && !library.hidden && view === 'home') covers[index].focus({ preventScroll: true });
     resize();
   }
 
@@ -329,6 +346,7 @@ export function createCarousel({ root, library, onFocus, onOpen, onCue }) {
   });
   rail.addEventListener('pointermove', (e) => {
     if (!drag || drag.id !== e.pointerId) return;
+    if (!e.buttons) return release(e, true); // the button came up somewhere the rail did not hear of
     const dx = e.clientX - drag.x;
     const dy = e.clientY - drag.y;
     if (!drag.started) {
@@ -366,8 +384,9 @@ export function createCarousel({ root, library, onFocus, onOpen, onCue }) {
       suppressClick = false;
     }, 0);
   }
-  rail.addEventListener('pointerup', (e) => release(e));
-  rail.addEventListener('pointercancel', (e) => release(e, true));
+  // (on the window: a press on a box may be let go anywhere)
+  window.addEventListener('pointerup', (e) => release(e));
+  window.addEventListener('pointercancel', (e) => release(e, true));
 
   function resize() {
     if (!rail.clientWidth) return;
