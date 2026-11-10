@@ -25,6 +25,13 @@ QUARTERS="--expect tl=ff0000 --expect tr=00ff00 --expect bl=0000ff --expect br=f
 # the video settings read back, a running counter) and one pixel per quarter.
 NOTES="--peek 400:10 --peek 1096a0 --peek 1097e0 --peek 11c2a0 --peek 11c3e0"
 NATIVE="$(uname -m)"
+# The test Macs on GitHub have no graphics chip: OpenGL is worked out by the
+# processor there, and the N64 core's 1280x960 picture then takes about a third
+# of a second per frame (longer for the Intel half, which is translated on top).
+# The cartridge has its picture up on the first frame, so the N64 runs are kept
+# short and get a generous time limit instead.
+N64_FRAMES=40
+N64_LIMIT=300
 failures=0
 
 echo "Testing $DIR"
@@ -35,15 +42,16 @@ mkdir -p "$TMP"
 node "$ROOT/test/make-n64-test-rom.js" "$TMP/dl-test-cart.z64" || exit 1
 printf 'not a real game' >"$TMP/dummy.bin"
 
-# macOS has no timeout(1): give each run 90 seconds, then stop it.
-guard() { perl -e 'alarm 90; exec @ARGV or die "could not run $ARGV[0]: $!\n"' "$@"; }
+# macOS has no timeout(1). guard <seconds> <command...> stops a run that is
+# still going after that long; the exit code is then 142.
+guard() { perl -e 'alarm shift; exec @ARGV or die "could not run $ARGV[0]: $!\n"' "$@"; }
 can_run() { arch -"$1" /usr/bin/true 2>/dev/null; }
 
 echo "== 1. Both architectures load the N64 core"
 for a in arm64 x86_64; do
   if ! can_run "$a"; then
     echo "   $a: this Mac can't run $a programs, skipped"
-  elif out="$(guard arch -"$a" "$PLAYER" --check --core "$N64" 2>&1)"; then
+  elif out="$(guard 60 arch -"$a" "$PLAYER" --check --core "$N64" 2>&1)"; then
     echo "   $a: $out"
   else
     echo "   $a: FAILED: $out"
@@ -53,11 +61,13 @@ done
 
 # run <label> <arch> <player arguments...>; returns the player's exit code
 # LOG_LINES=<n> shows up to that many lines of the run's log (default: the last 80)
+# LIMIT=<seconds> is how long the run may take (default: 90)
 run() {
   local label="$1" a="$2" code lines
   shift 2
   echo "== $label"
-  guard arch -"$a" "$PLAYER" "$@" --title "Self-test" --icon "$ICON" \
+  limit="${LIMIT:-90}"
+  guard "$limit" arch -"$a" "$PLAYER" "$@" --title "Self-test" --icon "$ICON" \
     --save-dir "$TMP/saves" --system-dir "$TMP/system" >"$TMP/run.log" 2>&1
   code=$?
   lines="$(wc -l <"$TMP/run.log" | tr -d ' ')"
@@ -75,7 +85,7 @@ run() {
 check() { # check <exit code>
   case "$1" in
     0) ;;
-    142) echo "   FAILED: still running after 90 seconds"; failures=$((failures + 1)) ;;
+    142) echo "   FAILED: still running after $limit seconds"; failures=$((failures + 1)) ;;
     *) echo "   FAILED (exit code $1)"; failures=$((failures + 1)) ;;
   esac
 }
@@ -102,8 +112,8 @@ for a in "$NATIVE" x86_64; do
     echo "== 3. N64 core ($a): this Mac can't run $a programs, skipped"
     continue
   fi
-  run "3. N64 core runs the test cartridge ($a)" "$a" --core "$N64" --rom "$TMP/dl-test-cart.z64" \
-    --option mupen64plus-CountPerOp=1 --frames 240 $QUARTERS $NOTES
+  LIMIT=$N64_LIMIT run "3. N64 core runs the test cartridge ($a)" "$a" --core "$N64" --rom "$TMP/dl-test-cart.z64" \
+    --option mupen64plus-CountPerOp=1 --frames $N64_FRAMES $QUARTERS $NOTES
   code=$?
   check "$code"
   if grep -q "faulted while shutting down" "$TMP/run.log"; then
@@ -116,14 +126,14 @@ if [ -n "${diagnose:-}" ]; then
   echo "== The failed N64 run again, one emulator setting changed at a time ($diagnose)"
   for variant in mupen64plus-EnableOverscan=Disabled mupen64plus-EnableCopyColorToRDRAM=Off \
     mupen64plus-EnableCopyColorFromRDRAM=True mupen64plus-EnableNativeResFactor=1; do
-    guard arch -"$diagnose" "$PLAYER" --core "$N64" --rom "$TMP/dl-test-cart.z64" --title "Self-test" \
+    guard "$N64_LIMIT" arch -"$diagnose" "$PLAYER" --core "$N64" --rom "$TMP/dl-test-cart.z64" --title "Self-test" \
       --save-dir "$TMP/saves" --system-dir "$TMP/system" --option mupen64plus-CountPerOp=1 --option "$variant" \
-      --frames 120 $QUARTERS >"$TMP/variant.log" 2>&1
+      --frames $N64_FRAMES $QUARTERS >"$TMP/variant.log" 2>&1
     echo "   $variant: exit code $?"
-    grep -E '^\[selftest\] (core|screen)' "$TMP/variant.log" | sed 's/^/      /'
+    grep -E '^\[selftest\] (frames|core|screen)' "$TMP/variant.log" | cut -c1-120 | sed 's/^/      /'
   done
-  LOG_LINES=600 run "The failed N64 run again with the OpenGL recorder on ($diagnose)" "$diagnose" --core "$N64" \
-    --rom "$TMP/dl-test-cart.z64" --option mupen64plus-CountPerOp=1 --frames 240 $QUARTERS $NOTES --gl-trace 2 --gl-probe
+  LOG_LINES=600 LIMIT=$N64_LIMIT run "The failed N64 run again with the OpenGL recorder on ($diagnose)" "$diagnose" --core "$N64" \
+    --rom "$TMP/dl-test-cart.z64" --option mupen64plus-CountPerOp=1 --frames $N64_FRAMES $QUARTERS $NOTES --gl-trace 2 --gl-probe
   echo "   (recorded run: exit code $?)"
 fi
 
