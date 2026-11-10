@@ -4,53 +4,147 @@
   <meta charset="utf-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self' app:; img-src 'self' app: data:; style-src 'self' 'unsafe-inline'">
   <title>Devious Licks</title>
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="dash/dash.css">
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">
-      <span class="logo" aria-hidden="true">DL</span>
-      <div>
-        <h1>Devious Licks</h1>
-        <p class="subtitle" id="subtitle">Game library</p>
+  <div id="dash" data-page="home">
+    <div class="dn-scene">
+
+      <!-- Home: the orb and the menu -->
+      <section class="dn-home" data-view="home" aria-label="Devious Licks main menu">
+        <canvas class="dn-grid" aria-hidden="true"></canvas>
+        <div class="dn-stage">
+          <div class="dn-core" aria-hidden="true">
+            <canvas class="dn-art-canvas" width="800" height="800" hidden></canvas>
+            <img class="dn-art-fallback" src="dash/art/orb.webp" alt="">
+          </div>
+          <nav class="dn-menu" aria-label="Main menu">
+            <button class="dn-item" type="button" data-page="games" aria-pressed="true"><span class="dn-disc" aria-hidden="true"></span><span class="dn-link" aria-hidden="true"><i class="dn-elbow"></i></span><span class="dn-bar"><span class="dn-label">GAMES</span></span></button>
+            <button class="dn-item" type="button" data-page="rom" aria-pressed="false"><span class="dn-disc" aria-hidden="true"></span><span class="dn-link" aria-hidden="true"><i class="dn-elbow"></i></span><span class="dn-bar"><span class="dn-label">LOAD ROM</span></span></button>
+            <button class="dn-item" type="button" data-page="friends" aria-pressed="false"><span class="dn-disc" aria-hidden="true"></span><span class="dn-link" aria-hidden="true"><i class="dn-elbow"></i></span><span class="dn-bar"><span class="dn-label">FRIENDS</span></span></button>
+            <button class="dn-item" type="button" data-page="settings" aria-pressed="false"><span class="dn-disc" aria-hidden="true"></span><span class="dn-link" aria-hidden="true"><i class="dn-elbow"></i></span><span class="dn-bar"><span class="dn-label">SETTINGS</span></span></button>
+          </nav>
+          <button class="dn-select" type="button" aria-label="A, select"><span>A</span> SELECT</button>
+        </div>
+        <span class="dn-home-version" id="home-version"></span>
+      </section>
+
+      <!-- Load ROM -->
+      <section class="dn-panel" data-view="rom" aria-labelledby="rom-title" hidden>
+        <div class="dn-panel-body">
+          <h1 class="dn-panel-title" id="rom-title">LOAD ROM</h1>
+          <p>Add a game from a file on this Mac. The game stays on this Mac and is not uploaded anywhere.</p>
+          <div class="dn-rows">
+            <button id="add" class="dn-row dn-row-big" type="button" data-nav title="Add a game file from this Mac"><span>Choose a game file</span></button>
+          </div>
+          <p class="dn-fine">You can also drag game files onto this window at any time. These kinds work: <span id="add-kinds">.nes .sfc .smc .gb .gbc .gba .md .gen .smd .z64 .n64 .v64</span>. A zipped game has to be unpacked first.</p>
+          <p id="add-result" class="dn-result" role="status" aria-live="polite"></p>
+        </div>
+        <button class="dn-back dn-prompt" type="button" data-native aria-label="B, back"><span>B</span> BACK</button>
+      </section>
+
+      <!-- Friends -->
+      <section class="dn-panel" data-view="friends" aria-labelledby="friends-title" hidden>
+        <div class="dn-panel-body">
+          <h1 class="dn-panel-title" id="friends-title">FRIENDS</h1>
+          <p>Playing with friends online is not available yet.</p>
+          <p class="dn-fine">When it is, this is where you will find them.</p>
+        </div>
+        <button class="dn-back dn-prompt" type="button" data-native aria-label="B, back"><span>B</span> BACK</button>
+      </section>
+
+      <!-- Settings -->
+      <section class="dn-panel" data-view="settings" aria-labelledby="settings-title" hidden>
+        <div class="dn-panel-body">
+          <h1 class="dn-panel-title" id="settings-title">SETTINGS</h1>
+          <div class="dn-rows">
+            <div class="dn-setting">
+              <span class="dn-setting-name" id="set-update">App</span>
+              <button id="update" class="dn-row" type="button" data-nav aria-describedby="set-update" title="Get the newest version of Devious Licks"><span>Update</span></button>
+            </div>
+            <div class="dn-setting">
+              <span class="dn-setting-name" id="set-refresh">Games</span>
+              <button id="refresh" class="dn-row" type="button" data-nav aria-describedby="set-refresh" title="Look for new and updated games"><span>Refresh</span></button>
+            </div>
+            <div class="dn-setting">
+              <span class="dn-setting-name" id="set-sound">Sound</span>
+              <button id="sound" class="dn-row" type="button" data-nav aria-describedby="set-sound" aria-pressed="true"><span>On</span></button>
+            </div>
+            <div class="dn-setting">
+              <label class="dn-setting-name" for="volume">Volume</label>
+              <span class="dn-row dn-row-range"><input id="volume" type="range" min="0" max="60" step="5" value="25" data-nav></span>
+            </div>
+            <div class="dn-setting">
+              <span class="dn-setting-name" id="set-motion">Motion</span>
+              <button id="motion" class="dn-row" type="button" data-nav aria-describedby="set-motion" aria-pressed="true"><span>On</span></button>
+            </div>
+          </div>
+          <p class="dn-fine dn-about"><span id="version"></span><span id="synced"></span></p>
+        </div>
+        <button class="dn-back dn-prompt" type="button" data-native aria-label="B, back"><span>B</span> BACK</button>
+      </section>
+
+      <!-- Games: the carousel -->
+      <section class="dn-library" data-view="games" data-screen="home" aria-label="Games" hidden>
+        <div class="dc-stage">
+          <canvas class="dc-chamber-canvas" aria-hidden="true"></canvas>
+          <div class="dc-rail" role="region" aria-roledescription="carousel" aria-label="Game covers">
+            <div class="dc-floor" aria-hidden="true"></div>
+          </div>
+          <div id="empty" class="dc-empty" hidden>
+            <h2>No games yet</h2>
+            <p id="empty-text">Add one of your own with Load ROM, or drag a game file onto this window.</p>
+          </div>
+          <div class="dc-find" hidden>
+            <input id="search" type="search" placeholder="Find a game" aria-label="Find a game" autocomplete="off" spellcheck="false">
+          </div>
+          <button id="filter" class="dc-filter" type="button" data-native hidden title="Show one console (Up and Down)"></button>
+          <div class="dc-info" aria-hidden="true">
+            <div class="dc-info-title"></div>
+            <div class="dc-info-meta"></div>
+            <div class="dc-info-desc"></div>
+          </div>
+          <span class="dc-announcement" aria-live="polite" aria-atomic="true"></span>
+          <section class="dc-game-screen" aria-label="Starting a game" hidden>
+            <div class="dc-game-art" aria-hidden="true"></div>
+            <div class="dc-game-content">
+              <span class="dc-game-eyebrow">STARTING</span>
+              <h1 class="dc-game-title"></h1>
+              <p class="dc-game-text" role="status" aria-live="polite"></p>
+            </div>
+          </section>
+        </div>
+        <div class="dn-library-controls">
+          <div class="dn-prompts">
+            <button class="dn-home-back dn-prompt" type="button" data-native aria-label="B, back"><span>B</span> BACK</button>
+            <button class="dn-game-remove dn-prompt dn-prompt-small" type="button" data-native aria-label="X, remove this game" title="Remove this game from the library (X or Delete)" hidden><span>X</span> REMOVE</button>
+          </div>
+          <div class="dn-prompts">
+            <button class="dn-game-picture dn-prompt dn-prompt-small" type="button" data-native aria-label="Y, choose a picture for this game" title="Choose a picture for this game (Y or P, or drop one here)" hidden><span>Y</span> PICTURE</button>
+            <button class="dn-game-select dn-prompt" type="button" data-native aria-label="A, start this game" title="Start this game. Hold Option for the built-in emulator, Shift to record what goes wrong."><span>A</span> SELECT</button>
+          </div>
+        </div>
+      </section>
+
+      <canvas class="dn-flight" aria-hidden="true" hidden></canvas>
+    </div>
+
+    <!-- The strip the window is dragged by (the Mac's window buttons sit at its left end) -->
+    <div class="dn-titlebar">
+      <div id="status" class="dn-status" role="status" aria-live="polite" hidden></div>
+    </div>
+
+    <div class="dn-messages">
+      <div id="notice" class="dn-notice" role="status" hidden>
+        <span id="notice-text"></span>
+        <button id="notice-page" type="button" data-native hidden>Open the download page</button>
+        <button id="notice-close" class="dn-close" type="button" data-native title="Dismiss" aria-label="Dismiss this message">×</button>
       </div>
+      <div id="toast" class="dn-toast" role="status" aria-live="polite" hidden></div>
     </div>
-    <div class="actions">
-      <input id="search" type="search" placeholder="Search games" aria-label="Search games">
-      <button id="add" title="Add a game file from this Mac">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
-        <span>Add game</span>
-      </button>
-      <button id="update" title="Get the newest version of Devious Licks">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 11l5 5 5-5M5 20h14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        <span>Update</span>
-      </button>
-      <button id="refresh" class="primary">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        <span>Refresh</span>
-      </button>
-    </div>
-  </header>
 
-  <nav class="filters" id="filters" aria-label="Filter by console"></nav>
-
-  <main>
-    <div id="notice" class="notice" role="status" hidden>
-      <span id="notice-text"></span>
-      <button id="notice-page" hidden>Open the download page</button>
-      <button id="notice-close" class="close" title="Dismiss" aria-label="Dismiss this message">×</button>
-    </div>
-    <div id="status" class="status" hidden></div>
-    <section id="grid" class="grid" aria-live="polite"></section>
-    <div id="empty" class="empty" hidden>
-      <h2>No games yet</h2>
-      <p id="empty-text">Press Refresh to download the Devious Licks catalog.</p>
-    </div>
-  </main>
-
-  <footer class="footer"><span id="version"></span><span id="synced"></span></footer>
-  <div id="toast" class="toast" role="status" hidden></div>
-  <div id="dropzone" class="dropzone" hidden><div>Drop a game file to add it to this Mac's library</div></div>
-  <script src="app.js"></script>
+    <div id="dropzone" class="dn-dropzone" hidden><div id="dropzone-text">Drop a game file to add it to this Mac's library</div></div>
+  </div>
+  <script type="module" src="app.js"></script>
 </body>
 </html>

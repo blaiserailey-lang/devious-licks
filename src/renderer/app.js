@@ -1,131 +1,40 @@
-const CONSOLES = {
-  nes: 'NES', fceumm: 'NES',
-  snes: 'SNES', snes9x: 'SNES',
-  gba: 'GBA', mgba: 'GBA',
-  gb: 'Game Boy', gbc: 'Game Boy Color', gambatte: 'Game Boy',
-  segaMD: 'Genesis', genesis_plus_gx: 'Genesis',
-  n64: 'N64', mupen64plus_next: 'N64',
-};
-const consoleName = (core) => CONSOLES[core] || core.toUpperCase();
+// The library window. This file is the library's side of it: which games
+// there are, starting one, adding and removing your own, refreshing the
+// catalog, and the Update button. What it looks like and how it is steered
+// is the dashboard's side (dash/main.js).
 
 const $ = (id) => document.getElementById(id);
 let state = { games: [] };
 let filter = 'all';
 let query = '';
+let dash = null; // the dashboard, once it has started
+let consoleName = (core) => String(core || '').toUpperCase();
 
-function el(tag, props = {}, children = []) {
-  const node = document.createElement(tag);
-  Object.assign(node, props);
-  for (const c of [].concat(children)) if (c) node.append(c);
-  return node;
-}
-
-function renderFilters() {
-  const consoles = [...new Set(state.games.map((g) => consoleName(g.core)))].sort();
-  const nav = $('filters');
-  nav.replaceChildren();
-  if (consoles.length < 2) return;
-  for (const name of ['all', ...consoles]) {
-    const chip = el('button', { className: 'chip', textContent: name === 'all' ? 'All' : name });
-    chip.setAttribute('aria-pressed', String(filter === name));
-    chip.onclick = () => { filter = name; render(); };
-    nav.append(chip);
-  }
-}
-
-// A game's picture. Box art that is taller than the card's frame is shown
-// whole, over a blurred copy of itself, instead of being cut down to its middle.
-function art(game) {
-  const img = el('img', { className: 'cover', src: game.cover, alt: '', loading: 'lazy' });
-  const frame = el('div', { className: 'art' }, [img]);
-  const shape = () => {
-    if (img.naturalWidth > 480) frame.classList.add('smooth'); // a photo or a painting, not pixel art
-    if (img.naturalHeight > img.naturalWidth * 0.85 && !frame.classList.contains('whole')) {
-      frame.classList.add('whole');
-      frame.prepend(el('img', { className: 'backdrop', src: game.cover, alt: '' }));
-    }
-  };
-  // (A picture the window has already loaded is shaped at once: drawing the library again must not flash it cropped.)
-  if (img.complete && img.naturalWidth) shape();
-  else img.addEventListener('load', shape);
-  img.addEventListener('error', () => frame.replaceWith(el('div', { className: 'cover placeholder', textContent: game.title.slice(0, 1) })));
-  return frame;
-}
-
-const PICTURE_ICON =
-  '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="5.3" cy="6.2" r="1.3" fill="currentColor"/><path d="M2.5 12l3.4-3.3 2.3 2.1 2.6-3 2.7 4.2z" fill="currentColor"/></svg>';
-
-async function setCover(id, file) {
-  try {
-    const r = await window.library.setCover(id, file);
-    state = { ...state, games: r.games };
-    render();
-    if (r.message) toast(r.message);
-  } catch (err) {
-    toast(`The picture couldn't be set: ${(err && err.message) || err}`);
-  }
-}
-
-function card(game) {
-  const cover = game.cover ? art(game) : el('div', { className: 'cover placeholder', textContent: game.title.slice(0, 1) });
-  const tags = el('div', { className: 'tags' }, [
-    el('span', { className: 'tag', textContent: consoleName(game.core) }),
-    game.version ? el('span', { className: 'tag', textContent: `v${game.version}` }) : null,
-    game.players > 1 ? el('span', { className: 'tag', textContent: `${game.players}P` }) : null,
-    game.local ? el('span', { className: 'tag local', textContent: 'On this Mac' }) : null,
-  ]);
-  const node = el('button', { className: 'card', title: `Play ${game.title}` }, [
-    cover,
-    el('span', { className: 'play' }),
-    game.status ? el('span', { className: `badge ${game.status}`, textContent: game.status }) : null,
-    el('div', { className: 'meta' }, [
-      el('div', { className: 'title', textContent: game.title }),
-      game.description ? el('div', { className: 'desc', textContent: game.description }) : null,
-      tags,
-    ]),
-  ]);
-  node.onclick = (e) =>
-    window.library
-      .play(game.id, { reset: e.altKey, diagnose: e.shiftKey })
-      .catch((err) => toast(`${game.title} couldn't be started: ${(err && err.message) || err}`));
-  if (game.local) {
-    node.dataset.local = game.id;
-    const picture = el('span', { className: 'picture', title: game.cover ? 'Change the picture (press P, or drop one here)' : 'Choose a picture (press P, or drop one here)' });
-    picture.innerHTML = PICTURE_ICON;
-    picture.onclick = (e) => {
-      e.stopPropagation();
-      setCover(game.id);
-    };
-    node.append(picture);
-    node.addEventListener('keydown', (e) => {
-      if (e.key.toLowerCase() !== 'p' || e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
-      e.preventDefault();
-      setCover(game.id);
-    });
-    const remove = el('span', { className: 'remove', title: 'Remove from library', textContent: '×' });
-    remove.onclick = async (e) => {
-      e.stopPropagation();
-      state = { ...state, ...(await window.library.removeLocal(game.id)) };
-      render();
-    };
-    node.append(remove);
-  }
-  return node;
-}
-
-function render() {
-  renderFilters();
+// ---------- what is shown ----------
+function shown() {
   const q = query.trim().toLowerCase();
-  const games = state.games.filter((g) =>
+  return state.games.filter((g) =>
     (filter === 'all' || consoleName(g.core) === filter) &&
     (!q || g.title.toLowerCase().includes(q) || (g.description || '').toLowerCase().includes(q)));
-  $('grid').replaceChildren(...games.map(card));
-  $('empty').hidden = games.length > 0;
-  if (state.games.length && !games.length) $('empty-text').textContent = 'No games match your search.';
-  $('subtitle').textContent = `${state.games.length} game${state.games.length === 1 ? '' : 's'}`;
+}
+
+function consoles() {
+  return [...new Set(state.games.map((g) => consoleName(g.core)))].sort();
+}
+
+function about() {
+  return { total: state.games.length, filter, consoles: consoles(), query };
+}
+
+// Draws the library again. `focusId`: the game to put in front.
+function render(focusId) {
+  if (filter !== 'all' && !consoles().includes(filter)) filter = 'all'; // the last game of that console is gone
   $('synced').textContent = state.syncedAt
     ? `Last updated ${new Date(state.syncedAt).toLocaleString()} from ${state.source}`
     : `Catalog: ${state.source || ''}`;
+  if (!dash) return;
+  if (focusId) dash.showGame(focusId, shown(), about());
+  else dash.setGames(shown(), about());
 }
 
 function showStatus(text, isError = false) {
@@ -136,12 +45,13 @@ function showStatus(text, isError = false) {
 }
 
 let toastTimer;
-function toast(text) {
+function toast(text, isError = false) {
   const t = $('toast');
   t.textContent = text;
+  t.classList.toggle('error', isError);
   t.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (t.hidden = true), 5000);
+  toastTimer = setTimeout(() => (t.hidden = true), isError ? 8000 : 5000);
 }
 
 function summarize(s) {
@@ -153,8 +63,10 @@ function summarize(s) {
   return parts.length ? parts.join(' · ') : 'Your games are up to date.';
 }
 
+// ---------- the catalog ----------
 async function refresh() {
   const btn = $('refresh');
+  if (btn.disabled) return;
   btn.disabled = true;
   btn.classList.add('spinning');
   btn.querySelector('span').textContent = 'Refreshing…';
@@ -179,50 +91,90 @@ window.library.onProgress((p) => {
   else if (p.phase === 'start') showStatus(p.message);
 });
 
+// ---------- games added from a file ----------
 async function addLocal(files) {
   try {
+    const before = new Set(state.games.map((g) => g.id));
     const r = await window.library.addLocal(files);
     state = { ...state, games: r.games };
-    render();
+    const fresh = r.games.find((g) => g.local && !before.has(g.id));
     const parts = [];
-    if (r.added.length) parts.push(`Added ${r.added.join(', ')} (drop a picture onto it to give it a cover)`);
+    if (r.added.length) parts.push(`Added ${r.added.join(', ')}. To give it a picture, press Y or drop one onto it.`);
     if (r.skipped.length) parts.push(r.skipped.join(' · '));
+    $('add-result').textContent = parts.join(' ');
+    if (fresh) {
+      // The new game has to be in sight, whatever was being looked for.
+      filter = 'all';
+      query = '';
+      $('search').value = '';
+    }
+    render(fresh ? fresh.id : undefined);
     if (parts.length) toast(parts.join(' · '));
   } catch (err) {
-    toast(`That couldn't be added: ${(err && err.message) || err}`);
+    const text = `That couldn't be added: ${(err && err.message) || err}`;
+    $('add-result').textContent = text;
+    toast(text, true);
   }
 }
 
+async function removeLocal(game) {
+  try {
+    // (the app asks first whether it is really meant)
+    state = { ...state, ...(await window.library.removeLocal(game.id)) };
+    render();
+  } catch (err) {
+    toast(`${game.title} couldn't be removed: ${(err && err.message) || err}`, true);
+  }
+}
+
+async function setCover(id, file) {
+  try {
+    const r = await window.library.setCover(id, file);
+    state = { ...state, games: r.games };
+    render();
+    if (r.message) toast(r.message);
+  } catch (err) {
+    toast(`The picture couldn't be set: ${(err && err.message) || err}`, true);
+  }
+}
+
+// Starting a game. Option: the built-in (web) emulator, from scratch. Shift: with the recorder on.
+function play(game, mods) {
+  return window.library.play(game.id, { reset: Boolean(mods && mods.reset), diagnose: Boolean(mods && mods.diagnose) });
+}
+
 $('add').onclick = () => addLocal();
-let dragDepth = 0;
+
 // What is being dragged in: game files (anywhere on the window adds them), or
-// pictures (dropped on a game that was added from a file, they become its picture).
+// pictures (on the Games screen, a picture becomes the picture of the game in
+// front, when that game was added from a file).
+let dragDepth = 0;
 const isPicture = (f) => /^image\//.test(f.type || '') || /\.(png|jpe?g|gif|webp|heic|heif)$/i.test(f.name || '');
 const draggingPictures = (e) => {
   const items = [...((e.dataTransfer && e.dataTransfer.items) || [])].filter((i) => i.kind === 'file');
   return items.length > 0 && items.every((i) => /^image\//.test(i.type || ''));
 };
+const pictureTarget = () => (dash && dash.page === 'games' && dash.game && dash.game.local ? dash.game : null);
 const dragOver = () => {
   dragDepth = 0;
   $('dropzone').hidden = true;
-  document.body.classList.remove('picture-drag');
-  for (const c of document.querySelectorAll('.card.target')) c.classList.remove('target');
+  $('dash').classList.remove('picture-drag');
 };
 window.addEventListener('dragenter', (e) => {
   e.preventDefault();
   dragDepth++;
-  if (draggingPictures(e)) document.body.classList.add('picture-drag');
-  else $('dropzone').hidden = false;
+  if (draggingPictures(e)) {
+    const game = pictureTarget();
+    $('dash').classList.add('picture-drag');
+    $('dropzone-text').textContent = game ? `Drop the picture to give it to ${game.title}` : 'A picture goes onto a game you added: bring it to the front on the Games screen first';
+  } else {
+    $('dropzone-text').textContent = "Drop a game file to add it to this Mac's library";
+  }
+  $('dropzone').hidden = false;
 });
 // (No relatedTarget: the drag left the window. The count alone can be off when the library is redrawn under a drag.)
 window.addEventListener('dragleave', (e) => { if (!e.relatedTarget || --dragDepth <= 0) dragOver(); });
-window.addEventListener('dragover', (e) => {
-  e.preventDefault();
-  if (!document.body.classList.contains('picture-drag')) return;
-  const over = e.target instanceof Element ? e.target.closest('.card[data-local]') : null;
-  for (const c of document.querySelectorAll('.card.target')) if (c !== over) c.classList.remove('target');
-  if (over) over.classList.add('target');
-});
+window.addEventListener('dragover', (e) => e.preventDefault());
 window.addEventListener('drop', (e) => {
   e.preventDefault();
   dragOver();
@@ -230,9 +182,10 @@ window.addEventListener('drop', (e) => {
   const files = [...e.dataTransfer.files];
   if (!files.length) return;
   if (files.every(isPicture)) {
-    const onto = e.target instanceof Element ? e.target.closest('.card[data-local]') : null;
-    if (onto) setCover(onto.dataset.local, files[0]);
-    else toast(state.games.some((g) => g.local) ? 'Drop the picture onto a game you added (the ones marked "On this Mac") to give it that picture.' : 'Add a game first, then drop a picture onto it to give it a cover.');
+    const game = pictureTarget();
+    if (game) setCover(game.id, files[0]);
+    else if (dash && dash.page === 'games' && dash.game) toast(`${dash.game.title} comes from the Devious Licks catalog and keeps its own picture. Pictures go onto games you added (the ones marked "On this Mac").`);
+    else toast(state.games.some((g) => g.local) ? 'To give a game you added a picture, bring it to the front on the Games screen, then drop the picture.' : 'Add a game first, then drop a picture onto it on the Games screen.');
     return;
   }
   addLocal(files);
@@ -244,7 +197,7 @@ window.addEventListener('drop', (e) => {
 // The app looks for a new version by itself when it opens, so the button
 // already reads "Update to 0.3.3" when there is one. Nothing is downloaded
 // until it is clicked. What the button has to say in whole sentences goes
-// into the notice above the games (not the status line: a refresh wipes that).
+// into the notice at the top of the window (not the status line: a refresh wipes that).
 let update = { phase: 'idle' };
 const told = {}; // things that are said once
 
@@ -297,6 +250,8 @@ function showUpdate(next) {
   if (update.version) {
     $('version').textContent = `Version ${update.version}`;
     $('version').title = update.installed && update.installed !== update.version ? `Updated in place. The installed app is ${update.installed}.` : '';
+    // (the home screen shows it too, small, and says when there is a newer one)
+    $('home-version').textContent = `Version ${update.version}${['available', 'ready', 'download'].includes(update.phase) && !again ? ` · ${update.latest} is out: see Settings` : ''}`;
   }
   // Said once, when the app has just come back from an update, either way.
   if (update.fresh && !told.fresh) {
@@ -351,14 +306,43 @@ $('notice-page').onclick = openPage;
 $('notice-close').onclick = () => notice('');
 
 $('refresh').onclick = refresh;
-$('search').oninput = (e) => { query = e.target.value; render(); };
 document.addEventListener('keydown', (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'r') { e.preventDefault(); refresh(); }
+  // Command-F: the search field on the Games screen.
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'f' && dash && dash.page === 'games') { e.preventDefault(); dash.find(); }
 });
+
+// ---------- start ----------
+// Everything above works without the dashboard. Should the dashboard fail to
+// start, the window falls back to showing the Settings list as plain rows, so
+// that the Update button is still there to click.
+async function startDashboard() {
+  const module = await import('./dash/main.js');
+  consoleName = module.consoleName;
+  dash = module.start({
+    play,
+    remove: removeLocal,
+    picture: (game) => setCover(game.id),
+    // Up and Down on the Games screen: one console at a time, then all again.
+    filter: (delta) => {
+      const all = ['all', ...consoles()];
+      if (all.length < 3) return;
+      filter = all[(all.indexOf(filter) + delta + all.length) % all.length];
+      render();
+    },
+    // The search field: what fits, with the first of them in front.
+    find: (text) => {
+      query = text;
+      const list = shown();
+      dash.setGames(list, about(), list[0] && list[0].id);
+    },
+  });
+}
 
 (async () => {
   let drawn = false;
   try {
+    await startDashboard();
     state = await window.library.get();
     render();
     drawn = true;
@@ -366,6 +350,7 @@ document.addEventListener('keydown', (e) => {
   } catch (err) {
     // Whatever is wrong with the library, the Update button has to stay
     // usable: a newer version may be the cure.
+    if (!dash) document.documentElement.classList.add('dl-fallback');
     notice("The library couldn't be opened on this Mac. Updating the app may fix it.", { error: true, page: true, detail: String((err && err.message) || err) });
     refresh().catch(() => {}); // a fresh copy of the catalog may be all it takes
   }
