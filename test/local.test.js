@@ -79,3 +79,13 @@ test('one file that cannot be read does not cost the others their place in the l
   await again.load();
   assert.deepStrictEqual(again.view().map((g) => g.title), ['Kept']);
 });
+
+test('a zipped game is turned away with a word on what to do', async () => {
+  const src = fs.mkdtempSync(path.join(os.tmpdir(), 'dl-src-'));
+  fs.writeFileSync(path.join(src, 'Game.zip'), 'PK');
+  const lib = new LocalGames(fs.mkdtempSync(path.join(os.tmpdir(), 'dl-local-')));
+  await lib.load();
+  const r = await lib.add([path.join(src, 'Game.zip')]);
+  assert.deepStrictEqual(r.added, []);
+  assert.match(r.skipped[0], /Game\.zip: unpack it first/);
+});

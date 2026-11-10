@@ -106,8 +106,10 @@ check() { # check <exit code>
 run "2. Stand-in core, software picture ($NATIVE)" "$NATIVE" --core "$TESTCORE" --rom "$TMP/dummy.bin" \
   --option test-mode=software --frames 120 $QUARTERS --expect-tone 441
 code=$?
-if [ "$code" = 4 ]; then
+if [ "$code" = 4 ] && [ -z "${GITHUB_ACTIONS:-}" ]; then
   # No window server or no OpenGL on this machine: nothing visual can be tested.
+  # (On GitHub's Macs there is one, so there it counts as the failure it is:
+  # a release must never go out with the picture untested.)
   echo "::warning::The player self-test could not open an OpenGL window on this Mac, so the picture checks were skipped."
   [ "$failures" = 0 ] || exit 1
   exit 0

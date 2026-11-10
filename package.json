@@ -1,7 +1,7 @@
 {
   "name": "devious-licks",
   "productName": "Devious Licks",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "The Devious Licks game library: every Devious Licks game, kept up to date, with a built-in emulator.",
   "main": "src/boot.js",
   "private": true,
@@ -16,7 +16,7 @@
     },
     "update": {
       "needsApp": "0.3.2",
-      "notes": ""
+      "notes": "N64 player fixes: Esc and the green button in full screen, sound that could freeze the game, Cmd+S and Cmd+L for save states. Dragging a game onto the library works."
     }
   },
   "scripts": {

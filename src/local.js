@@ -12,6 +12,7 @@ const CORE_BY_EXT = {
   '.z64': 'n64', '.n64': 'n64', '.v64': 'n64',
 };
 const EXTENSIONS = Object.keys(CORE_BY_EXT).map((e) => e.slice(1));
+const PACKED = new Set(['.zip', '.7z', '.rar', '.gz']);
 
 function titleFromFile(file) {
   return path.basename(file, path.extname(file)).replace(/[_]+/g, ' ').replace(/\s+/g, ' ').trim();
@@ -95,7 +96,11 @@ class LocalGames {
       const ext = path.extname(src).toLowerCase();
       const core = CORE_BY_EXT[ext];
       if (!core) {
-        result.skipped.push(`${path.basename(src)}: not a supported game file`);
+        result.skipped.push(
+          PACKED.has(ext)
+            ? `${path.basename(src)}: unpack it first, then add the game file inside (.z64, .n64 or .v64 for N64)`
+            : `${path.basename(src)}: not a supported game file`
+        );
         continue;
       }
       // One file that can't be read or copied must not cost the others their place in the list.

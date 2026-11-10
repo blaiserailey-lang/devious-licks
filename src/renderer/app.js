@@ -53,7 +53,10 @@ function card(game) {
       tags,
     ]),
   ]);
-  node.onclick = (e) => window.library.play(game.id, { reset: e.altKey, diagnose: e.shiftKey });
+  node.onclick = (e) =>
+    window.library
+      .play(game.id, { reset: e.altKey, diagnose: e.shiftKey })
+      .catch((err) => toast(`${game.title} couldn't be started: ${(err && err.message) || err}`));
   if (game.local) {
     const remove = el('span', { className: 'remove', title: 'Remove from library', textContent: '×' });
     remove.onclick = async (e) => {
@@ -133,13 +136,17 @@ window.library.onProgress((p) => {
 });
 
 async function addLocal(files) {
-  const r = await window.library.addLocal(files);
-  state = { ...state, games: r.games };
-  render();
-  const parts = [];
-  if (r.added.length) parts.push(`Added ${r.added.join(', ')}`);
-  if (r.skipped.length) parts.push(r.skipped.join(' · '));
-  if (parts.length) toast(parts.join(' · '));
+  try {
+    const r = await window.library.addLocal(files);
+    state = { ...state, games: r.games };
+    render();
+    const parts = [];
+    if (r.added.length) parts.push(`Added ${r.added.join(', ')}`);
+    if (r.skipped.length) parts.push(r.skipped.join(' · '));
+    if (parts.length) toast(parts.join(' · '));
+  } catch (err) {
+    toast(`That couldn't be added: ${(err && err.message) || err}`);
+  }
 }
 
 $('add').onclick = () => addLocal();
@@ -151,7 +158,8 @@ window.addEventListener('drop', (e) => {
   e.preventDefault();
   dragDepth = 0;
   $('dropzone').hidden = true;
-  if (e.dataTransfer.files.length) addLocal(e.dataTransfer.files);
+  // (As an array: a FileList itself does not make it across to the app's side.)
+  if (e.dataTransfer.files.length) addLocal([...e.dataTransfer.files]);
 });
 
 // ---------- the Update button ----------

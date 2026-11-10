@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, protocol, net, shell, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, protocol, net, shell, dialog, clipboard } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const originalFs = require('original-fs'); // sees app.asar as a file (Electron's own fs treats it as a folder)
@@ -261,11 +261,28 @@ function tail(file, lines) {
 function openNative(game, romPath, native, options, diagnose) {
   const running = nativePlayers.get(game.id);
   if (running) {
-    running.kill('SIGURG'); // already open: ask it to come to the front (harmless if it isn't listening yet)
+    if (diagnose && !running.diagnose && !running.restarting) {
+      // Shift-click on a game that is open without the recorder: the recorder
+      // can only be switched on at the start, so start it again. (The player
+      // writes the game's save before it leaves.)
+      running.restarting = true;
+      running.quitting = true;
+      running.once('exit', () => openNative(game, romPath, native, options, true));
+      running.kill('SIGTERM');
+    } else {
+      running.kill('SIGURG'); // already open: ask it to come to the front (harmless if it isn't listening yet)
+    }
     return;
   }
   const data = app.getPath('userData');
   const logFile = path.join(data, 'logs', `player-${game.core}.log`);
+  // What was wrong the last time is often what somebody wants to see after
+  // starting the game once more: keep one earlier log.
+  try {
+    fs.renameSync(logFile, logFile.replace(/\.log$/, '.previous.log'));
+  } catch {
+    // there was none
+  }
   const args = [
     '--core', native.core,
     '--rom', romPath,
@@ -290,36 +307,62 @@ function openNative(game, romPath, native, options, diagnose) {
   } catch {
     log = 'ignore';
   }
-  const child = spawn(native.bin, args, { stdio: ['ignore', log, log] });
-  const startedAt = Date.now();
-  if (typeof log === 'number') fs.closeSync(log);
-  nativePlayers.set(game.id, child);
-
   let reported = false;
+  let child = null;
   const failed = (why) => {
-    if (reported || child.quitting || !libraryWindow) return;
+    if (reported || (child && child.quitting)) return;
     reported = true;
     const lastLines = tail(logFile, 8);
-    dialog.showMessageBox(libraryWindow, {
+    const detail = `${why}\n\nOption-click the game to try the built-in emulator instead.${lastLines ? `\n\n${lastLines}` : ''}\n\nFull log: ${logFile}`;
+    const box = {
       type: 'warning',
       message: `${game.title} stopped unexpectedly.`,
-      detail: `${why}\n\nOption-click the game to try the built-in emulator instead.${lastLines ? `\n\n${lastLines}` : ''}\n\nFull log: ${logFile}`,
-    });
+      detail,
+      buttons: ['OK', 'Show Log', 'Copy Details'],
+      defaultId: 0,
+      cancelId: 0,
+    };
+    // (With the library window closed the message stands by itself.)
+    (libraryWindow ? dialog.showMessageBox(libraryWindow, box) : dialog.showMessageBox(box))
+      .then(({ response }) => {
+        if (response === 1) shell.showItemInFolder(logFile);
+        if (response === 2) clipboard.writeText(`${box.message}\n${detail}\n\n${tail(logFile, 200)}`);
+      })
+      .catch(() => {});
   };
   // macOS can refuse to run the player that sits inside an app it hasn't
   // verified: the player is then stopped at once, before it prints anything.
-  const blocked =
-    'macOS stopped the built-in player before it could start. Open System Settings, go to Privacy & Security and scroll down: ' +
-    'if it lists something from Devious Licks as blocked, click Open Anyway there, then click the game again.';
+  const openAnyway =
+    'Open System Settings, go to Privacy & Security and scroll down: if it lists "dl-player" or ' +
+    '"mupen64plus_next_libretro.dylib" (or anything else from Devious Licks) as blocked, click Open Anyway there, then click the game again.';
+  const blocked = `macOS stopped the built-in player before it could start. ${openAnyway}`;
+  const printed = () => /^\[player\]/m.test(tail(logFile, 200)); // the player got as far as saying something
+
+  try {
+    child = spawn(native.bin, args, { stdio: ['ignore', log, log] });
+  } catch (err) {
+    failed(err && (err.code === 'EPERM' || err.code === 'EACCES') ? blocked : `The player couldn't start: ${(err && err.message) || err}`);
+    return;
+  } finally {
+    if (typeof log === 'number') fs.closeSync(log);
+  }
+  child.diagnose = Boolean(diagnose);
+  nativePlayers.set(game.id, child);
+  const gone = () => {
+    if (nativePlayers.get(game.id) === child) nativePlayers.delete(game.id);
+  };
   child.on('exit', (code, signal) => {
-    nativePlayers.delete(game.id);
+    gone();
     if (code === 4) failed("This Mac couldn't open a game window with OpenGL.");
-    else if (code) failed(`The player reported a problem (code ${code}).`);
-    else if (signal === 'SIGKILL' && Date.now() - startedAt < 5000) failed(blocked);
+    else if (code) {
+      const coreRefused = /Could not load the emulator core/.test(tail(logFile, 50));
+      failed(coreRefused ? `The player couldn't load its emulator. macOS may be holding it back. ${openAnyway}` : `The player reported a problem (code ${code}).`);
+    } else if (signal === 'SIGKILL') failed(printed() ? 'The player was stopped from outside (SIGKILL).' : blocked);
+    else if (signal === 'SIGALRM') failed('The player stopped responding and was ended.');
     else if (signal) failed(`The player crashed (${signal}).`);
   });
   child.on('error', (err) => {
-    nativePlayers.delete(game.id);
+    gone();
     failed(err.code === 'EPERM' || err.code === 'EACCES' ? blocked : `The player couldn't start: ${err.message}`);
   });
 }
@@ -537,7 +580,12 @@ app.whenReady().then(async () => {
   ipcMain.handle('update:install', () => updater.install());
   ipcMain.handle('update:restart', () => restartIntoUpdate());
   ipcMain.handle('update:page', () => shell.openExternal(`${RELEASES}/latest`));
-  ipcMain.handle('local:add', (_e, files) => addLocal(Array.isArray(files) ? files.filter((f) => typeof f === 'string') : []));
+  ipcMain.handle('local:add', (_e, files) => {
+    if (!Array.isArray(files) || !files.length) return addLocal([]); // the Add game button: ask which files
+    const paths = files.filter((f) => f && typeof f === 'string');
+    // Something was dropped that is not a file on this Mac (a picture from a web page, a piece of text).
+    return paths.length ? addLocal(paths) : { ...view(), added: [], skipped: ["That isn't a game file on this Mac"] };
+  });
   ipcMain.handle('local:remove', async (_e, id) => {
     const choice = await dialog.showMessageBox(libraryWindow, {
       type: 'question',
@@ -579,7 +627,15 @@ function smokeTest() {
       const page = await libraryWindow.webContents.executeJavaScript(
         '({ bridge: typeof window.library === "object" && typeof window.library.play === "function", page: Boolean(document.getElementById("refresh")) })'
       );
-      const n64Player = Boolean(nativeCoreFor({ core: 'n64' }));
+      // The N64 player: there, and able to start and load its emulator
+      // (--check does that much and needs no window).
+      const native = nativeCoreFor({ core: 'n64' });
+      let n64Player = Boolean(native);
+      if (native && app.isPackaged) {
+        const run = require('child_process').spawnSync(native.bin, ['--check', '--core', native.core], { encoding: 'utf8', timeout: 60000 });
+        n64Player = run.status === 0 && /^\[check\]/m.test(run.stdout || '');
+        if (!n64Player) console.log(`[smoke] the N64 player did not start: ${JSON.stringify({ status: run.status, signal: run.signal, error: run.error && run.error.message, out: (run.stdout || '').slice(-300), err: (run.stderr || '').slice(-300) })}`);
+      }
       // The release build also has the app fetch the start of a real file
       // from GitHub, down the same road the Update button takes.
       const probe = /^https:\/\/github\.com\//.test(process.env.DL_SMOKE_FETCH || '') ? await probeFetch(process.env.DL_SMOKE_FETCH) : null;

@@ -24,12 +24,15 @@
  * 4 this machine can't open a window with OpenGL 3.3.
  *
  * Keys: arrows = analog stick, X = A, C = B, Z = Z trigger, Q/E = L/R,
- * Enter = Start, I/J/K/L = C buttons, W/A/S/D = D-pad, F5 = save state,
- * F9 = load state, Cmd+F / F11 = fullscreen, Cmd+R = reset,
+ * Enter = Start, I/J/K/L = C buttons, W/A/S/D = D-pad,
+ * Cmd+S (or F5) = save state, Cmd+L (or F9) = load state,
+ * Cmd+F (or F11) = fullscreen, Cmd+R = reset, Cmd+Q / Cmd+W = quit,
  * F8 = record one more frame (when started with --gl-trace),
  * Esc = leave fullscreen (or quit when windowed).
+ * (On a Mac only Cmd makes a shortcut: Ctrl sits next to the game keys.)
  * Game controllers: the first one plays as player 1 (with the keyboard),
- * the next ones as players 2 to 4.
+ * the next ones as players 2 to 4. Bottom button = A, left button = B,
+ * either trigger = Z, shoulders = L/R, right stick = C buttons.
  */
 #include <SDL.h>
 #include <dlfcn.h>
@@ -1129,6 +1132,8 @@ static int selftest_report(double seconds, unsigned core_error) {
 
 /* ---------- audio ---------- */
 static bool audio_playing;
+static bool audio_stalled;   /* the sound device has stopped taking sound: nothing more is queued until it does */
+static long audio_dry_count; /* how often the queue ran empty while playing */
 
 static size_t audio_batch(const int16_t *data, size_t frames) {
   if (test_frames) {
@@ -1145,7 +1150,7 @@ static size_t audio_batch(const int16_t *data, size_t frames) {
     }
   }
   n_audio_frames += frames;
-  if (audio_dev) SDL_QueueAudio(audio_dev, data, (Uint32)(frames * 4));
+  if (audio_dev && !audio_stalled) SDL_QueueAudio(audio_dev, data, (Uint32)(frames * 4));
   return frames;
 }
 static void audio_sample(int16_t l, int16_t r) {
@@ -1156,7 +1161,11 @@ static void audio_sample(int16_t l, int16_t r) {
 /* ---------- input ---------- */
 static const Uint8 *keys;
 
+/* While Cmd is down a shortcut is being typed: its letter is not a game button. */
+static bool typing_shortcut(void) { return (SDL_GetModState() & KMOD_GUI) != 0; }
+
 static int16_t key_button(unsigned id) {
+  if (typing_shortcut()) return 0;
   switch (id) {
     case RETRO_DEVICE_ID_JOYPAD_B: return keys[SDL_SCANCODE_X];      /* N64 A */
     case RETRO_DEVICE_ID_JOYPAD_Y: return keys[SDL_SCANCODE_C];      /* N64 B */
@@ -1192,8 +1201,9 @@ static int16_t pad_button(unsigned port, unsigned id) {
     case RETRO_DEVICE_ID_JOYPAD_DOWN: b = SDL_CONTROLLER_BUTTON_DPAD_DOWN; break;
     case RETRO_DEVICE_ID_JOYPAD_LEFT: b = SDL_CONTROLLER_BUTTON_DPAD_LEFT; break;
     case RETRO_DEVICE_ID_JOYPAD_RIGHT: b = SDL_CONTROLLER_BUTTON_DPAD_RIGHT; break;
-    case RETRO_DEVICE_ID_JOYPAD_L2: return SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 12000;
-    case RETRO_DEVICE_ID_JOYPAD_R2: return SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 12000;
+    case RETRO_DEVICE_ID_JOYPAD_L2: /* either trigger is the N64 Z trigger */
+      return SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 12000 || SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 12000;
+    case RETRO_DEVICE_ID_JOYPAD_R2: return 0; /* to the N64 core this is "C buttons mode", which turns A and B off; the right stick does the C buttons */
     default: return 0;
   }
   return SDL_GameControllerGetButton(pad, b);
@@ -1207,7 +1217,7 @@ static int16_t analog(unsigned port, unsigned index, unsigned id) {
   bool left = index == RETRO_DEVICE_INDEX_ANALOG_LEFT, x_axis = id == RETRO_DEVICE_ID_ANALOG_X;
   int v = 0;
   if (index != RETRO_DEVICE_INDEX_ANALOG_LEFT && index != RETRO_DEVICE_INDEX_ANALOG_RIGHT) return 0;
-  if (port == 0) {
+  if (port == 0 && !typing_shortcut()) {
     if (left) v = x_axis ? key_axis(SDL_SCANCODE_LEFT, SDL_SCANCODE_RIGHT) : key_axis(SDL_SCANCODE_UP, SDL_SCANCODE_DOWN);
     else v = x_axis ? key_axis(SDL_SCANCODE_J, SDL_SCANCODE_L) : key_axis(SDL_SCANCODE_I, SDL_SCANCODE_K); /* C buttons */
   }
@@ -1251,7 +1261,12 @@ static void pad_added(int device_index) {
     if (!pads[i]) free_slot = i;
     else if (SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(pads[i])) == id) return; /* already open */
   }
-  if (free_slot < 0 || !SDL_IsGameController(device_index)) return;
+  if (free_slot < 0) return;
+  if (!SDL_IsGameController(device_index)) {
+    const char *name = SDL_JoystickNameForIndex(device_index);
+    fprintf(stderr, "[player] ignoring a controller this player has no layout for: %s\n", name ? name : "(no name)");
+    return;
+  }
   pads[free_slot] = SDL_GameControllerOpen(device_index);
   if (pads[free_slot]) fprintf(stderr, "[player] controller %d: %s\n", free_slot + 1, SDL_GameControllerName(pads[free_slot]));
 }
@@ -1431,13 +1446,17 @@ static void save_state(void) {
   size_t size = core.serialize_size();
   void *buf = size ? malloc(size) : NULL;
   if (buf && core_serialize(buf, size) && write_file(state_path, buf, size)) fprintf(stderr, "[player] state saved\n");
+  else fprintf(stderr, "[player] the state could not be saved\n");
   free(buf);
 }
 
 static void load_state(void) {
-  size_t len;
+  size_t len = 0, want = core.serialize_size();
   void *buf = read_file(state_path, &len);
-  if (buf && core_unserialize(buf, len)) fprintf(stderr, "[player] state loaded\n");
+  if (!buf) fprintf(stderr, "[player] there is no saved state to load\n");
+  else if (len != want) fprintf(stderr, "[player] the saved state is %zu bytes instead of %zu: not loaded\n", len, want);
+  else if (core_unserialize(buf, len)) fprintf(stderr, "[player] state loaded\n");
+  else fprintf(stderr, "[player] the core did not take the saved state\n");
   free(buf);
 }
 
@@ -1469,10 +1488,59 @@ static void start_core(void) {
   core.set_input_state(input_state);
 }
 
+/* Full screen has two ways in on a Mac: the player's own keys, which go
+ * through SDL, and the Mac's (the green button, the Window menu), which SDL
+ * does not note in the window's flags. The window itself knows both. */
+static bool sdl_fullscreen(void) {
+  return (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0;
+}
+
+#ifdef __APPLE__
+static id ns_window(void) {
+  SDL_SysWMinfo info;
+  SDL_VERSION(&info.version);
+  return SDL_GetWindowWMInfo(window, &info) && info.subsystem == SDL_SYSWM_COCOA ? (id)info.info.cocoa.window : (id)0;
+}
+#endif
+
+static bool native_fullscreen(void) {
+#ifdef __APPLE__
+  id w = ns_window();
+  return w && (((unsigned long (*)(id, SEL))objc_msgSend)(w, sel_registerName("styleMask")) & (1UL << 14)) != 0; /* NSWindowStyleMaskFullScreen */
+#else
+  return false;
+#endif
+}
+
+static bool in_fullscreen(void) { return sdl_fullscreen() || native_fullscreen(); }
+
+/* Keeps SDL's flag and the mouse pointer in line with the window. Called a
+ * few times a second, and before a full screen key is acted on. */
+static void watch_fullscreen(void) {
+  static bool was_native, pointer_hidden;
+  bool flag = sdl_fullscreen(), real = native_fullscreen();
+  if (flag && !real && was_native) { /* entered with the player's key, left the Mac's way */
+    SDL_SetWindowFullscreen(window, 0); /* nothing moves: SDL finds the window already there */
+    flag = sdl_fullscreen();
+  }
+  was_native = flag && real;
+  if ((flag || real) != pointer_hidden) {
+    pointer_hidden = flag || real;
+    SDL_ShowCursor(pointer_hidden ? SDL_DISABLE : SDL_ENABLE);
+  }
+}
+
 static void toggle_fullscreen(void) {
-  bool fs = SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN_DESKTOP;
-  SDL_SetWindowFullscreen(window, fs ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
-  SDL_ShowCursor(fs ? SDL_ENABLE : SDL_DISABLE);
+  watch_fullscreen();
+  bool flag = sdl_fullscreen();
+#ifdef __APPLE__
+  if (!flag && native_fullscreen()) { /* entered the Mac's way: leave the same way */
+    ((void (*)(id, SEL, id))objc_msgSend)(ns_window(), sel_registerName("toggleFullScreen:"), (id)0);
+    return;
+  }
+#endif
+  SDL_SetWindowFullscreen(window, flag ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
+  watch_fullscreen();
 }
 
 /* Shows the app's icon in the Dock instead of a blank "exec" icon. */
@@ -1503,6 +1571,12 @@ static void set_dock_icon(const char *path) {
 static volatile sig_atomic_t front_requested;
 static void on_front_request(int sig) { (void)sig; front_requested = 1; }
 
+/* The library asks the player to stop with SIGTERM. The main loop saves and
+ * leaves; if it no longer turns, the alarm ends the process regardless, so a
+ * stuck player can never be left behind. */
+static volatile sig_atomic_t term_requested;
+static void on_term(int sig) { (void)sig; term_requested = 1; alarm(8); }
+
 static void bring_to_front(void) {
 #ifdef __APPLE__
   SDL_SysWMinfo info;
@@ -1515,9 +1589,9 @@ static void bring_to_front(void) {
   SDL_RaiseWindow(window);
 }
 
-/* Once the game is saved, a fault while the core shuts down costs nothing. */
+/* Once the game is saved, a fault or a hang while shutting down costs nothing. */
 static void leave_quietly(int sig) {
-  static const char msg[] = "[player] the core faulted while shutting down (ignored)\n";
+  static const char msg[] = "[player] shutting down faulted or took too long (ignored)\n";
   (void)sig;
   if (write(2, msg, sizeof msg - 1) < 0) { /* nothing to do about it */ }
   _exit(exit_code);
@@ -1527,6 +1601,7 @@ int main(int argc, char **argv) {
   const char *core_path = NULL, *rom_path = NULL, *title = "Devious Licks", *icon = NULL;
   bool fullscreen = false, check_only = false;
   signal(SIGURG, on_front_request);
+  signal(SIGTERM, on_term); /* before SDL starts, so SDL leaves it alone */
   for (size_t i = 0; i < sizeof builtin_overrides / sizeof builtin_overrides[0]; i++) opt_override(builtin_overrides[i][0], builtin_overrides[i][1]);
   for (int i = 1; i < argc; i++) {
     const char *a = argv[i], *v = i + 1 < argc ? argv[i + 1] : NULL;
@@ -1586,6 +1661,7 @@ int main(int argc, char **argv) {
 
   SDL_SetHint(SDL_HINT_MAC_CTRL_CLICK_EMULATE_RIGHT_CLICK, "1");
   SDL_SetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0");
+  SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1"); /* a controller plays even while the library is the app in front */
   die_status = 4; /* from here to the first frame, failures mean "no window / no OpenGL here" */
   if (SDL_Init(SDL_INIT_VIDEO) != 0) die("Could not start video: %s", SDL_GetError());
   die_status = 1;
@@ -1606,6 +1682,10 @@ int main(int argc, char **argv) {
     if (!rom_data) die("Could not read the game file.");
     game.data = rom_data;
     game.size = len;
+    /* A saved state belongs to one build of a game: a changed file starts
+     * without one instead of with one the core can't use. (The battery
+     * save above keeps its name, it has to survive updates.) */
+    snprintf(state_path, sizeof state_path, "%s/%s-%08x.state", save_dir, rom_base, (unsigned)fnv1a(rom_data, len));
   }
 
   /* The window + GL context must exist before load_game for HW cores. */
@@ -1622,6 +1702,7 @@ int main(int argc, char **argv) {
   window = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 960, 720,
                             SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
   if (!window) die("Could not open the game window: %s", SDL_GetError());
+  SDL_StopTextInput(); /* game keys are not text: keep the Mac's input methods out of it */
   glctx = SDL_GL_CreateContext(window);
   if (!glctx) die("Your Mac's graphics driver couldn't start OpenGL: %s", SDL_GetError());
   SDL_GL_MakeCurrent(window, glctx);
@@ -1629,6 +1710,12 @@ int main(int argc, char **argv) {
   if (!load_gl()) die("Your Mac's graphics driver is missing features this game needs.");
   die_status = 1;
   fprintf(stderr, "[player] OpenGL %s, %s\n", (const char *)glGetString_(GL_VERSION), (const char *)glGetString_(GL_RENDERER));
+  {
+    int ww = 0, wh = 0, dw = 0, dh = 0;
+    SDL_GetWindowSize(window, &ww, &wh);
+    SDL_GL_GetDrawableSize(window, &dw, &dh);
+    fprintf(stderr, "[player] window %dx%d, drawn at %dx%d\n", ww, wh, dw, dh);
+  }
   set_dock_icon(icon);
   glClearColor_(0, 0, 0, 1);
   glClear_(GL_COLOR_BUFFER_BIT);
@@ -1674,8 +1761,12 @@ int main(int argc, char **argv) {
   const Uint64 frame_ticks = (Uint64)((double)freq / fps);
   const Uint64 started = SDL_GetPerformanceCounter();
   Uint64 next = started;
-  Uint32 last_sram = SDL_GetTicks();
+  Uint32 last_sram = SDL_GetTicks(), stall_level = 0;
   long frame_no = 0;
+  Uint64 play_from = started, report_from = started; /* the speed lines in the log: one after 10 s, then one a minute */
+  Uint64 report_at = started + 10 * freq;
+  long report_frame = 0;
+  bool focus_logged = false;
 
   while (running) {
     SDL_Event e;
@@ -1685,27 +1776,59 @@ int main(int argc, char **argv) {
       else if (e.type == SDL_CONTROLLERDEVICEREMOVED) pad_removed(e.cdevice.which);
       else if (e.type == SDL_KEYDOWN && !e.key.repeat) {
         SDL_Keycode k = e.key.keysym.sym;
-        bool cmd = e.key.keysym.mod & (KMOD_GUI | KMOD_CTRL);
-        if (k == SDLK_F11 || (cmd && k == SDLK_f)) toggle_fullscreen();
+#if defined(__APPLE__) || defined(DL_MAC_KEYS) /* (the second one: to try the Mac's rules on another system) */
+        bool cmd = (e.key.keysym.mod & KMOD_GUI) != 0; /* Ctrl is not a shortcut key on a Mac, and it sits next to the game keys */
+        /* Ctrl+Cmd+F is the Window menu's own "Toggle Full Screen" for as long as SDL offers it. */
+        bool menu_does_it = k == SDLK_f && (e.key.keysym.mod & KMOD_CTRL) && !sdl_fullscreen();
+#else
+        bool cmd = (e.key.keysym.mod & (KMOD_GUI | KMOD_CTRL)) != 0;
+        bool menu_does_it = false;
+#endif
+        if (k == SDLK_F11 || (cmd && k == SDLK_f)) { if (!menu_does_it) toggle_fullscreen(); }
         else if (k == SDLK_ESCAPE) {
-          if (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN_DESKTOP) toggle_fullscreen();
+          watch_fullscreen();
+          if (in_fullscreen()) toggle_fullscreen();
           else running = false;
         } else if (cmd && (k == SDLK_q || k == SDLK_w)) running = false;
-        else if (k == SDLK_F5) save_state();
-        else if (k == SDLK_F9) load_state();
+        else if (k == SDLK_F5 || (cmd && k == SDLK_s)) save_state();
+        else if (k == SDLK_F9 || (cmd && k == SDLK_l)) load_state();
         else if (k == SDLK_F8 && gl_trace) tr_request = true;
         else if (cmd && k == SDLK_r) core_reset();
       }
     }
+    if (term_requested) running = false;
     if (!running) break;
     if (front_requested) { front_requested = 0; bring_to_front(); }
+    if (frame_no % 20 == 10) watch_fullscreen();
+    if (!focus_logged && frame_no == 30) {
+      /* Started by another app, the window may be on top without having the keyboard. */
+      bool focused = (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS) != 0;
+      focus_logged = true;
+      if (!focused && !test_frames) bring_to_front();
+      fprintf(stderr, "[player] the game window %s\n", focused ? "has the keyboard" : "did not have the keyboard after half a second: asked for it again");
+    }
 
     frame_ready = false;
     frame_no++;
     bool recorded = gl_trace && (frame_no <= gl_trace || frame_no == test_frames || tr_request);
     if (tr_request) { tr_request = false; tr_failures = tr_unseen = tr_n_seen = 0; } /* start counting afresh */
     if (gl_trace) tr_window(recorded ? "frame" : NULL, frame_no, recorded);
-    core_run();
+    if (frame_no == 1) {
+      /* The first frame can take seconds: the core prepares every shader the
+       * game used before. Say so where it can be seen, and measure it. */
+      char busy[600];
+      snprintf(busy, sizeof busy, "%s - preparing graphics...", title);
+      SDL_SetWindowTitle(window, busy);
+      SDL_PumpEvents();
+      Uint64 t0 = SDL_GetPerformanceCounter();
+      core_run();
+      Uint64 t1 = SDL_GetPerformanceCounter();
+      SDL_SetWindowTitle(window, title);
+      fprintf(stderr, "[player] the first frame took %.0f ms\n", (double)(t1 - t0) * 1000.0 / (double)freq);
+      play_from = report_from = t1; /* speed is measured from here */
+      report_at = t1 + 10 * freq;
+      report_frame = 1;
+    } else core_run();
     if (gl_trace) {
       tr_pending("the end of the frame");
       if (recorded) tr_survey();
@@ -1728,10 +1851,19 @@ int main(int argc, char **argv) {
     Uint64 step = frame_ticks;
     if (audio_dev) {
       Uint32 queued = SDL_GetQueuedAudioSize(audio_dev);
-      if (!audio_playing && queued >= q_start) { SDL_PauseAudioDevice(audio_dev, 0); audio_playing = true; }
-      else if (audio_playing && queued == 0) { SDL_PauseAudioDevice(audio_dev, 1); audio_playing = false; } /* ran dry: rebuffer */
-      if (audio_playing && queued > q_high) step += frame_ticks / 50;
-      else if (audio_playing && queued < q_low) step -= frame_ticks / 50;
+      if (audio_stalled) {
+        if (queued < stall_level) { /* the device takes sound again: start afresh */
+          SDL_PauseAudioDevice(audio_dev, 1);
+          SDL_ClearQueuedAudio(audio_dev);
+          audio_stalled = audio_playing = false;
+          fprintf(stderr, "[player] the sound device is taking sound again\n");
+        }
+      } else {
+        if (!audio_playing && queued >= q_start) { SDL_PauseAudioDevice(audio_dev, 0); audio_playing = true; }
+        else if (audio_playing && queued == 0) { SDL_PauseAudioDevice(audio_dev, 1); audio_playing = false; audio_dry_count++; } /* ran dry: rebuffer */
+        if (audio_playing && queued > q_high) step += frame_ticks / 50;
+        else if (audio_playing && queued < q_low) step -= frame_ticks / 50;
+      }
     }
     next += step;
     Uint64 now = SDL_GetPerformanceCounter();
@@ -1739,26 +1871,54 @@ int main(int argc, char **argv) {
       Uint32 ms = (Uint32)((next - now) * 1000 / freq);
       if (ms > 1) SDL_Delay(ms - 1);
       while (SDL_GetPerformanceCounter() < next) { }
-    } else if (now - next > freq / 4) {
-      next = now; /* fell far behind (e.g. window dragged): resync */
+    } else if (now - next > 3 * frame_ticks) {
+      next = now; /* fell behind by more than the sound queue holds (a hitch, a window drag): carry on from here, don't fast-forward */
     }
-    while (audio_playing && SDL_GetQueuedAudioSize(audio_dev) > q_cap) SDL_Delay(1);
+    /* More sound waiting than a quarter of a second: let the device catch
+     * up. But a device that has stopped taking sound (the output is being
+     * switched, the Mac just woke up) must not stop the game with it. */
+    if (audio_playing && !audio_stalled) {
+      Uint32 waited = SDL_GetTicks(), q;
+      while ((q = SDL_GetQueuedAudioSize(audio_dev)) > q_cap) {
+        if (SDL_GetTicks() - waited >= 250) {
+          audio_stalled = true;
+          stall_level = q;
+          fprintf(stderr, "[player] the sound device has stopped taking sound: carrying on without it\n");
+          break;
+        }
+        SDL_Delay(1);
+      }
+    }
+    if (!test_frames && SDL_GetPerformanceCounter() >= report_at) {
+      Uint64 t = SDL_GetPerformanceCounter();
+      double secs = (double)(t - report_from) / (double)freq;
+      fprintf(stderr, "[player] speed: %ld frames in %.1f s, %.0f%% of full speed; the sound ran dry %ld time%s so far\n", frame_no - report_frame, secs,
+              secs > 0 ? 100.0 * (double)(frame_no - report_frame) / (secs * fps) : 0.0, audio_dry_count, audio_dry_count == 1 ? "" : "s");
+      report_frame = frame_no;
+      report_from = t;
+      report_at = t + 60 * freq;
+    }
 
     if (SDL_GetTicks() - last_sram > 10000) { save_sram(); last_sram = SDL_GetTicks(); }
   }
 
   save_sram();
-  if (audio_dev) SDL_CloseAudioDevice(audio_dev);
   /* The game is saved. Shutting the core down lets it store its shader cache,
-   * but if it faults or hangs while doing so there is nothing left to lose. */
+   * but if it, the sound device or the window faults or hangs on the way out
+   * there is nothing left to lose. */
   signal(SIGSEGV, leave_quietly);
   signal(SIGBUS, leave_quietly);
   signal(SIGILL, leave_quietly);
   signal(SIGABRT, leave_quietly);
   signal(SIGALRM, leave_quietly);
-  alarm(5);
+  alarm(audio_stalled ? 2 : 5); /* closing a sound device that has stopped can take for ever */
+  if (!test_frames && frame_no > 1) {
+    double secs = (double)(SDL_GetPerformanceCounter() - play_from) / (double)freq;
+    fprintf(stderr, "[player] played %ld frames in %.1f s (%.0f%% of full speed over the whole session); the sound ran dry %ld time%s\n", frame_no - 1, secs,
+            secs > 0 ? 100.0 * (double)(frame_no - 1) / (secs * fps) : 0.0, audio_dry_count, audio_dry_count == 1 ? "" : "s");
+  }
+  if (audio_dev) SDL_CloseAudioDevice(audio_dev);
   core_shutdown();
-  alarm(0);
   free(rom_data);
   SDL_GL_DeleteContext(glctx);
   SDL_DestroyWindow(window);
