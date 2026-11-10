@@ -203,8 +203,11 @@ jobs:
           ls -lh dist/*.dmg
           # The app itself has to open on both chips: it starts, loads its
           # library window, finds the built-in player, says so and quits.
+          # (The Intel run is translated by Rosetta on this Mac, the whole app
+          # at its first start: that alone has taken from 35 to over 120
+          # seconds, so it gets a long limit.)
           for chip in arm64 x86_64; do
-            perl -e 'alarm shift; exec @ARGV' 120 arch -"$chip" "$APP/Contents/MacOS/Devious Licks" --smoke-test >smoke.log 2>&1 || true
+            perl -e 'alarm shift; exec @ARGV' 420 arch -"$chip" "$APP/Contents/MacOS/Devious Licks" --smoke-test >smoke.log 2>&1 || true
             grep '^\[smoke\]' smoke.log || { echo "::error::The app did not start ($chip)"; tail -40 smoke.log; exit 1; }
             grep -q '^\[smoke\] ok' smoke.log || { echo "::error::The app's start-up check failed ($chip)"; tail -40 smoke.log; exit 1; }
           done

@@ -644,7 +644,7 @@ function smokeTest() {
       const native = nativeCoreFor({ core: 'n64' });
       let n64Player = Boolean(native);
       if (native && app.isPackaged) {
-        const run = require('child_process').spawnSync(native.bin, ['--check', '--core', native.core], { encoding: 'utf8', timeout: 60000 });
+        const run = require('child_process').spawnSync(native.bin, ['--check', '--core', native.core], { encoding: 'utf8', timeout: 120000 });
         n64Player = run.status === 0 && /^\[check\]/m.test(run.stdout || '');
         if (!n64Player) console.log(`[smoke] the N64 player did not start: ${JSON.stringify({ status: run.status, signal: run.signal, error: run.error && run.error.message, out: (run.stdout || '').slice(-300), err: (run.stderr || '').slice(-300) })}`);
       }
