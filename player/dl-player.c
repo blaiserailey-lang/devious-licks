@@ -14,6 +14,7 @@
  *             [--no-dialog]                 report errors on stderr only
  *             [--verbose]                   include the core's debug log
  *   Self-test (used by CI): [--frames <n>] [--expect <tl|tr|bl|br|c>=<rrggbb>]...
+ *             [--expect-tone <hz>]          the sound has to be a tone of that pitch
  *             [--peek <hex address>[:<words>]]...  print the console's memory
  *             [--gl-trace <frames>]         record the core's OpenGL calls
  *             [--gl-probe]                  ...and what each framebuffer then shows
@@ -201,6 +202,11 @@ static int n_expects;
 static unsigned long peeks[32]; /* --peek: addresses in the console's memory */
 static int n_peeks;
 static unsigned long n_hw_frames, n_sw_frames, n_audio_frames;
+static double expect_tone;      /* --expect-tone: the pitch the sound should have, in Hz */
+static double audio_rate = 44100; /* what the core says its sound is sampled at */
+/* What the sound looked like (left channel): its loudest sample and the times
+ * it swung from one side of silence to the other. */
+static struct { long peak; unsigned long swings, first, last; int side; } tone;
 
 static int die_status = 1; /* exit code used by die() */
 
@@ -1097,6 +1103,19 @@ static int selftest_report(double seconds, unsigned core_error) {
   for (int i = 0; i < 5; i++) got[i] = read_px(view_x + (int)(view_w * px[i]), view_y + (int)(view_h * py[i]));
   printf("[selftest] screen tl=%06x tr=%06x bl=%06x br=%06x c=%06x\n", got[0], got[1], got[2], got[3], got[4]);
   peek_report("at the end");
+  /* A steady tone swings twice per cycle; measured from the first swing to
+   * the last, so silence before or after doesn't count. */
+  double pitch = tone.swings > 1 && tone.last > tone.first ? (double)(tone.swings - 1) / 2.0 * audio_rate / (double)(tone.last - tone.first) : 0;
+  printf("[selftest] sound  frames=%lu loudest=%ld pitch=%.0f Hz\n", n_audio_frames, tone.peak, pitch);
+  if (expect_tone > 0) {
+    if (tone.swings < 20 || tone.peak < 1000) {
+      printf("[selftest] FAIL no tone arrived (expected %.0f Hz)\n", expect_tone);
+      failed = 1;
+    } else if (pitch < expect_tone * 0.95 || pitch > expect_tone * 1.05) {
+      printf("[selftest] FAIL the tone is %.0f Hz, expected %.0f Hz\n", pitch, expect_tone);
+      failed = 1;
+    }
+  }
   for (int e = 0; e < n_expects; e++)
     for (int i = 0; i < 5; i++)
       if (!strcmp(expects[e].name, names[i]) && !close_enough(got[i], expects[e].rgb)) {
@@ -1112,6 +1131,19 @@ static int selftest_report(double seconds, unsigned core_error) {
 static bool audio_playing;
 
 static size_t audio_batch(const int16_t *data, size_t frames) {
+  if (test_frames) {
+    for (size_t i = 0; i < frames; i++) {
+      int sample = data[i * 2];
+      int side = sample > 512 ? 1 : sample < -512 ? -1 : 0;
+      if (labs((long)sample) > tone.peak) tone.peak = labs((long)sample);
+      if (side && side != tone.side) {
+        if (!tone.swings) tone.first = n_audio_frames + i;
+        tone.last = n_audio_frames + i;
+        tone.swings++;
+        tone.side = side;
+      }
+    }
+  }
   n_audio_frames += frames;
   if (audio_dev) SDL_QueueAudio(audio_dev, data, (Uint32)(frames * 4));
   return frames;
@@ -1511,6 +1543,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(a, "--frames") && v) { test_frames = atol(argv[++i]); no_dialog = true; }
     else if (!strcmp(a, "--gl-trace") && v) gl_trace = atol(argv[++i]);
     else if (!strcmp(a, "--gl-probe")) gl_probe = true;
+    else if (!strcmp(a, "--expect-tone") && v) expect_tone = atof(argv[++i]);
     else if (!strcmp(a, "--peek") && v) { /* <hex address>[:<number of words>] */
       char *end;
       unsigned long address = strtoul(argv[++i], &end, 16);
@@ -1621,6 +1654,7 @@ int main(int argc, char **argv) {
 
   SDL_AudioSpec want = { 0 }, have;
   want.freq = (int)(av.timing.sample_rate > 0 ? av.timing.sample_rate : 44100);
+  audio_rate = want.freq;
   want.format = AUDIO_S16SYS;
   want.channels = 2;
   want.samples = 512;

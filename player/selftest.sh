@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Checks the built player on this Mac before it ships:
 #   1. both halves of the player (Apple Silicon and Intel) load the N64 core;
-#   2. the player shows the right picture with a tiny stand-in core;
+#   2. the player shows the right picture, and hears the right tone, with a
+#      tiny stand-in core;
 #   3. the real N64 core boots a home-made test cartridge and shows the four
 #      coloured quarters that cartridge paints, pixel by pixel;
 #   4. the same with a second cartridge that draws the way a 3D game does
-#      (triangles, shading, a texture, the depth buffer).
+#      (triangles, shading, a texture, the depth buffer) and plays a tone,
+#      whose pitch has to come out of the core right.
 #      If a picture is wrong, that run is repeated with the player's OpenGL
 #      recorder on, to show where the picture got lost.
 # The cartridges come from test/make-n64-test-rom.js; no game is involved.
@@ -29,10 +31,11 @@ QUARTERS="--expect tl=ff0000 --expect tr=00ff00 --expect bl=0000ff --expect br=f
 # the video settings read back, a running counter) and one pixel per quarter.
 NOTES="--peek 400:10 --peek 1096a0 --peek 1097e0 --peek 11c2a0 --peek 11c3e0"
 # The 3D cartridge: four squares with a gap between them, and a green square
-# behind them that may only show in that gap (the centre of the picture).
-# Its notes also count the drawing jobs it has handed to the graphics chip.
-QUARTERS_3D="--expect tl=ffff00 --expect tr=00ffff --expect bl=ff00ff --expect br=ff8400 --expect c=00c000"
-NOTES_3D="--peek 400:11 --peek 1096a0 --peek 1097e0 --peek 11c2a0 --peek 11c3e0 --peek 112d40"
+# behind them that may only show in that gap (the centre of the picture). It
+# also plays a 1000 Hz tone. Its notes count the drawing jobs it has handed to
+# the graphics chip and show the graphics and sound chips' status.
+QUARTERS_3D="--expect tl=ffff00 --expect tr=00ffff --expect bl=ff00ff --expect br=ff8400 --expect c=00c000 --expect-tone 1000"
+NOTES_3D="--peek 400:12 --peek 1096a0 --peek 1097e0 --peek 11c2a0 --peek 11c3e0 --peek 112d40"
 NATIVE="$(uname -m)"
 # The test Macs on GitHub have no graphics chip: OpenGL is worked out by the
 # processor there, and the N64 core's 1280x960 picture then takes about a third
@@ -101,7 +104,7 @@ check() { # check <exit code>
 }
 
 run "2. Stand-in core, software picture ($NATIVE)" "$NATIVE" --core "$TESTCORE" --rom "$TMP/dummy.bin" \
-  --option test-mode=software --frames 120 $QUARTERS
+  --option test-mode=software --frames 120 $QUARTERS --expect-tone 441
 code=$?
 if [ "$code" = 4 ]; then
   # No window server or no OpenGL on this machine: nothing visual can be tested.
@@ -112,7 +115,7 @@ fi
 check "$code"
 
 run "2. Stand-in core, OpenGL picture ($NATIVE)" "$NATIVE" --core "$TESTCORE" --rom "$TMP/dummy.bin" \
-  --option test-mode=hw --frames 120 $QUARTERS
+  --option test-mode=hw --frames 120 $QUARTERS --expect-tone 441
 check $?
 
 for a in "$NATIVE" x86_64; do
@@ -150,7 +153,7 @@ if [ -n "${diagnose:-}" ]; then
       --save-dir "$TMP/saves" --system-dir "$TMP/system" --option mupen64plus-CountPerOp=1 --option "$variant" \
       --frames $N64_FRAMES $diagnose_want >"$TMP/variant.log" 2>&1
     echo "   $variant: exit code $?"
-    grep -E '^\[selftest\] (frames|core|screen)' "$TMP/variant.log" | cut -c1-120 | sed 's/^/      /'
+    grep -E '^\[selftest\] (frames|core|screen|sound)' "$TMP/variant.log" | cut -c1-120 | sed 's/^/      /'
   done
   LOG_LINES=600 LIMIT=$N64_LIMIT run "The failed $diagnose_cart run again with the OpenGL recorder on ($diagnose)" "$diagnose" --core "$N64" \
     --rom "$diagnose_rom" --option mupen64plus-CountPerOp=1 --frames $N64_FRAMES $diagnose_want $diagnose_notes --gl-trace 2 --gl-probe

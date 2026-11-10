@@ -2,8 +2,8 @@
  * Minimal libretro core used to smoke-test dl-player. It shows four coloured
  * quarters (red, green / blue, white): as software frames by default, or
  * drawn with OpenGL when the core option test-mode is "hw". That exercises
- * both of the player's video paths, its core-option handling, audio and saves
- * without needing a real game.
+ * both of the player's video paths, its core-option handling, audio (a quiet
+ * 441 Hz tone) and saves without needing a real game.
  */
 #include <stdint.h>
 #include <stdio.h>
@@ -120,7 +120,8 @@ static void quarter(int x, int y, int w, int h, float r, float g, float b) {
 }
 
 void retro_run(void) {
-  static int16_t silence[735 * 2];
+  static int16_t sound[735 * 2];
+  static unsigned long sample_no;
   poll_input();
   int a = input(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B);
   if (hw_mode) {
@@ -144,7 +145,10 @@ void retro_run(void) {
         fb[y * 320 + x] = a ? 0x00ff3d7f : y < 120 ? (x < 160 ? 0x00ff0000 : 0x0000ff00) : (x < 160 ? 0x000000ff : 0x00ffffff);
     video(fb, 320, 240, 320 * 4);
   }
-  audio(silence, 735);
+  /* a steady, quiet 441 Hz tone (100 samples per cycle at 44100 Hz), so the
+   * player's self-test has a pitch to measure */
+  for (int i = 0; i < 735; i++, sample_no++) sound[i * 2] = sound[i * 2 + 1] = sample_no % 100 < 50 ? 2000 : -2000;
+  audio(sound, 735);
   frame++;
   sram[0] = (uint8_t)(frame / 60);
 }

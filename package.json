@@ -21,7 +21,7 @@
     "start:local": "DL_CATALOG_DIR=./catalog electron .",
     "catalog": "node scripts/update-catalog.js",
     "test": "node --test test/*.test.js",
-    "dist": "electron-builder --mac dmg --publish never"
+    "dist": "electron-builder --mac dmg --universal --publish never"
   },
   "build": {
     "appId": "com.deviouslicks.library",
@@ -41,7 +41,8 @@
           ]
         }
       ],
-      "icon": "build/icon.png"
+      "icon": "build/icon.png",
+      "x64ArchFiles": "Contents/Resources/player/*"
     },
     "dmg": {
       "artifactName": "Devious-Licks-${version}.dmg"

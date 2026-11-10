@@ -19,7 +19,8 @@
 // only show where nothing is in front of it: in the cross-shaped gap between
 // the four squares and as a thin frame around them. That takes the emulator
 // through what a 3D game uses: triangles, shading, a texture and the depth
-// buffer.
+// buffer. It also plays a steady 1000 Hz tone through the sound chip, the way
+// a game plays its sound: buffer after buffer.
 //
 // Both leave a few notes in memory for the self-test and then idle. Running
 // them in the bundled N64 core checks the whole chain on a real Mac: core,
@@ -47,6 +48,7 @@ function assembler() {
     nop: () => emit(0),
     label: (name) => { labels[name] = words.length; },
     bne: (rs, rt, target) => branch(0x14000000, rs, rt, target),
+    bltz: (rs, target) => branch(0x04000000, rs, 0, target), // branch if the top bit is set
     beq: (rs, rt, target) => branch(0x10000000, rs, rt, target),
     li: (rt, value) => {
       const hi = (value >>> 16) & 0xffff;
@@ -294,28 +296,57 @@ function drawingData() {
   return { block: block.subarray(0, used), microcodeData, commandList, commandBytes: commands.length };
 }
 
+// The sound: 1024 samples (about a 30th of a second at 32 kHz) of a square
+// wave, 32 samples per cycle, which makes a 1000 Hz tone. Both ears get the
+// same, at a quarter of full volume.
+const SOUND = 0x00210000; // where it ends up in memory
+function soundData() {
+  const samples = Buffer.alloc(1024 * 4);
+  for (let i = 0; i < 1024; i++) {
+    const level = i % 32 < 16 ? 8192 : -8192;
+    samples.writeInt16BE(level, i * 4);
+    samples.writeInt16BE(level, i * 4 + 2);
+  }
+  return samples;
+}
+
 function cartridge3d() {
   const data = drawingData();
-  const DATA_IN_ROM = 0x1000;
+  const sound = soundData();
+  const DATA_IN_ROM = 0x1000, SOUND_IN_ROM = 0x2000;
   const a = assembler();
 
-  // copy the drawing data from the cartridge into memory
-  a.li(R.t0, 0xb0000000 | DATA_IN_ROM);
-  a.li(R.t1, 0xa0000000 | DATA);
-  a.addiu(R.t2, R.zero, data.block.length / 4);
-  a.label('copy');
-  a.lw(R.t3, 0, R.t0);
-  a.sw(R.t3, 0, R.t1);
-  a.addiu(R.t0, R.t0, 4);
-  a.addiu(R.t2, R.t2, -1);
-  a.bne(R.t2, R.zero, 'copy');
-  a.addiu(R.t1, R.t1, 4); // (runs before the branch takes effect)
+  // copy the drawing data and the sound from the cartridge into memory
+  const copy = (name, from, to, bytes) => {
+    a.li(R.t0, 0xb0000000 | from);
+    a.li(R.t1, 0xa0000000 | to);
+    a.addiu(R.t2, R.zero, bytes / 4);
+    a.label(name);
+    a.lw(R.t3, 0, R.t0);
+    a.sw(R.t3, 0, R.t1);
+    a.addiu(R.t0, R.t0, 4);
+    a.addiu(R.t2, R.t2, -1);
+    a.bne(R.t2, R.zero, name);
+    a.addiu(R.t1, R.t1, 4); // (runs before the branch takes effect)
+  };
+  copy('copy drawing data', DATA_IN_ROM, DATA, data.block.length);
+  copy('copy sound', SOUND_IN_ROM, SOUND, sound.length);
 
   videoSetup(a);
   leaveNotes(a);
 
+  // The sound chip: 16-bit stereo at 32 kHz (the video clock divided by 1521).
+  a.lui(R.t4, 0xa450);
+  const ai = (offset, value) => { a.li(R.t0, value); a.sw(R.t0, offset, R.t4); };
+  ai(0x08, 1);     // on
+  ai(0x10, 1520);  // sample rate
+  ai(0x14, 15);    // 16 bits
+  a.li(R.t5, SOUND);
+  a.li(R.t6, sound.length);
+
   // Every time the video chip says a frame is over: acknowledge it, start the
-  // graphics task (the job description is further down, at 0xfc0), count it.
+  // graphics task (the job description is further down, at 0xfc0), count it,
+  // and top up the sound.
   a.lui(R.a2, 0xa430);              // interrupt flags
   a.lui(R.a3, 0xa404);              // graphics processor control
   a.ori(R.t3, R.zero, 0);
@@ -330,8 +361,15 @@ function cartridge3d() {
   a.lw(R.t0, 0x10, R.a3);
   a.sw(R.t0, COUNTER + 4, R.a1);    // note: the graphics processor's status after the task
   a.addiu(R.t3, R.t3, 1);
+  a.sw(R.t3, COUNTER, R.a1);        // note: tasks started so far
+  // Keep the sound chip fed. It holds one buffer besides the one it is playing.
+  a.lw(R.t0, 0x0c, R.t4);
+  a.sw(R.t0, COUNTER + 8, R.a1);    // note: the sound chip's status
+  a.bltz(R.t0, 'wait');             // both places taken: nothing to add this frame
+  a.nop();
+  a.sw(R.t5, 0x00, R.t4);           // where the samples are
   a.beq(R.zero, R.zero, 'wait');
-  a.sw(R.t3, COUNTER, R.a1);        // note: tasks started so far (runs before the branch takes effect)
+  a.sw(R.t6, 0x04, R.t4);           // how many bytes: this queues them (runs before the branch takes effect)
 
   const words = a.finish(0xfc0 - 0x40);
   const rom = romImage(words, 'DL TEST CART 3D');
@@ -349,6 +387,7 @@ function cartridge3d() {
   };
   for (const [offset, value] of Object.entries(task)) rom.writeUInt32BE(value, Number(offset));
   data.block.copy(rom, DATA_IN_ROM);
+  sound.copy(rom, SOUND_IN_ROM);
   return { rom, words };
 }
 

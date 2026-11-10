@@ -90,6 +90,10 @@ jobs:
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
 
+      # One app for Apple Silicon and Intel Macs ("--universal": naming a target
+      # on the command line would otherwise build for this machine's chip only).
+      # The player and the N64 core in player/dist are already universal; the
+      # x64ArchFiles setting in package.json tells the merge to keep them as is.
       # Signed + notarized when the Apple secrets exist; otherwise an ad-hoc
       # signed build that friends open via System Settings > Privacy & Security.
       - name: Build DMG
@@ -101,10 +105,10 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           if [ -n "$CSC_LINK" ]; then
-            npx electron-builder --mac dmg --publish never
+            npx electron-builder --mac dmg --universal --publish never
           else
             unset CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID
-            npx electron-builder --mac dmg --publish never -c.mac.identity=- -c.mac.hardenedRuntime=false
+            npx electron-builder --mac dmg --universal --publish never -c.mac.identity=- -c.mac.hardenedRuntime=false
           fi
 
       # The same test again on the player inside the finished, signed app.
@@ -114,6 +118,13 @@ jobs:
           [ -n "$APP" ] || APP="$(find dist -maxdepth 2 -name '*.app' | head -1)"
           echo "App: $APP"
           test -d "$APP/Contents/Resources/player"
+          for part in "Contents/MacOS/Devious Licks" "Contents/Frameworks/Electron Framework.framework/Electron Framework" \
+            Contents/Resources/player/dl-player Contents/Resources/player/mupen64plus_next_libretro.dylib; do
+            archs="$(lipo -archs "$APP/$part")"
+            echo "$part: $archs"
+            case "$archs" in *x86_64*arm64*|*arm64*x86_64*) ;; *) echo "::error::$part does not run on both Apple Silicon and Intel"; exit 1 ;; esac
+          done
+          ls -lh dist/*.dmg
           codesign --verify --deep --strict "$APP" || echo "::warning::codesign could not verify the packaged app"
           codesign -dv "$APP/Contents/Resources/player/dl-player" 2>&1 | sed -n '1,8p'
           PLAYER_DIR="$PWD/$APP/Contents/Resources/player" player/selftest.sh
