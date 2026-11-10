@@ -10,6 +10,13 @@ const pkg = require('../package.json');
 
 const ROOT = path.join(__dirname, '..');
 
+// "--smoke-test" (the release workflow runs the packaged app with it): start
+// as usual, check that the library window came up with its bridge to this
+// process and that the built-in N64 player is where the app looks for it,
+// print the verdict and quit. It keeps its files out of the real library.
+const SMOKE = process.argv.includes('--smoke-test');
+if (SMOKE) app.setPath('userData', path.join(app.getPath('temp'), `devious-licks-smoke-${process.pid}`));
+
 // app://app/...    -> files bundled with the app (UI, EmulatorJS, cores)
 // app://rom/<file> -> a downloaded ROM from the library cache
 // app://local/<file> -> a game added from a file on this Mac
@@ -299,10 +306,37 @@ app.whenReady().then(async () => {
   ipcMain.handle('game:play', (_e, id, opts) => openGame(id, { reset: Boolean(opts && opts.reset), diagnose: Boolean(opts && opts.diagnose) }));
 
   createLibraryWindow();
+  if (SMOKE) smokeTest();
   app.on('activate', () => {
     if (!libraryWindow) createLibraryWindow();
   });
 });
+
+function smokeTest() {
+  const finish = (ok, details) => {
+    console.log(`[smoke] ${ok ? 'ok' : 'FAILED'} ${JSON.stringify({ version: app.getVersion(), chip: process.arch, ...details })}`);
+    fs.rmSync(app.getPath('userData'), { recursive: true, force: true });
+    app.exit(ok ? 0 : 1);
+  };
+  const timer = setTimeout(() => finish(false, { why: 'the library window did not load within 45 seconds' }), 45000);
+  libraryWindow.webContents.once('did-fail-load', (_e, code, text) => {
+    clearTimeout(timer);
+    finish(false, { why: `the library window failed to load: ${text} (${code})` });
+  });
+  libraryWindow.webContents.once('did-finish-load', async () => {
+    clearTimeout(timer);
+    try {
+      const page = await libraryWindow.webContents.executeJavaScript(
+        '({ bridge: typeof window.library === "object" && typeof window.library.play === "function", page: Boolean(document.getElementById("refresh")) })'
+      );
+      const n64Player = Boolean(nativeCoreFor({ core: 'n64' }));
+      // (a copy run from the source folder has no built player; the packaged app must)
+      finish(page.bridge && page.page && (n64Player || !app.isPackaged), { ...page, n64Player });
+    } catch (err) {
+      finish(false, { why: String((err && err.message) || err) });
+    }
+  });
+}
 
 app.on('before-quit', () => {
   for (const child of nativePlayers.values()) {
