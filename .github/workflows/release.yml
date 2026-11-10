@@ -12,6 +12,11 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish the DMG as release v<version>. Untick for a test build: everything runs, nothing is published."
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -119,15 +124,18 @@ jobs:
           path: dist/*.dmg
 
       # Tag push / published release: attach to that tag. Manual "Run workflow":
-      # create (or update) the release v<version from package.json>.
+      # create (or update) the release v<version from package.json>, unless
+      # "publish" was unticked (a test build stops here, with the DMG above).
       - name: Pick release tag
         id: tag
+        if: github.event_name != 'workflow_dispatch' || inputs.publish
         run: |
           if [ -n "${{ github.event.release.tag_name }}" ]; then echo "name=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
           elif [ "${{ github.ref_type }}" = "tag" ]; then echo "name=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
           else echo "name=v$(node -p 'require("./package.json").version')" >> "$GITHUB_OUTPUT"; fi
 
       - name: Publish release
+        if: github.event_name != 'workflow_dispatch' || inputs.publish
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.name }}

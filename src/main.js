@@ -222,6 +222,7 @@ function openNative(game, romPath, native, options, diagnose) {
     log = 'ignore';
   }
   const child = spawn(native.bin, args, { stdio: ['ignore', log, log] });
+  const startedAt = Date.now();
   if (typeof log === 'number') fs.closeSync(log);
   nativePlayers.set(game.id, child);
 
@@ -236,15 +237,21 @@ function openNative(game, romPath, native, options, diagnose) {
       detail: `${why}\n\nOption-click the game to try the built-in emulator instead.${lastLines ? `\n\n${lastLines}` : ''}\n\nFull log: ${logFile}`,
     });
   };
+  // macOS can refuse to run the player that sits inside an app it hasn't
+  // verified: the player is then stopped at once, before it prints anything.
+  const blocked =
+    'macOS stopped the built-in player before it could start. Open System Settings, go to Privacy & Security and scroll down: ' +
+    'if it lists something from Devious Licks as blocked, click Open Anyway there, then click the game again.';
   child.on('exit', (code, signal) => {
     nativePlayers.delete(game.id);
     if (code === 4) failed("This Mac couldn't open a game window with OpenGL.");
     else if (code) failed(`The player reported a problem (code ${code}).`);
+    else if (signal === 'SIGKILL' && Date.now() - startedAt < 5000) failed(blocked);
     else if (signal) failed(`The player crashed (${signal}).`);
   });
   child.on('error', (err) => {
     nativePlayers.delete(game.id);
-    failed(`The player couldn't start: ${err.message}`);
+    failed(err.code === 'EPERM' || err.code === 'EACCES' ? blocked : `The player couldn't start: ${err.message}`);
   });
 }
 

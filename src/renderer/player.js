@@ -32,9 +32,36 @@ try {
   if (options && typeof options === 'object' && !Array.isArray(options)) {
     const clean = {};
     for (const [key, value] of Object.entries(options)) if (typeof value === 'string') clean[key] = value;
-    if (Object.keys(clean).length) window.EJS_defaultOptions = clean;
+    if (Object.keys(clean).length) {
+      window.EJS_defaultOptions = clean;
+      setAtStartup(clean);
+    }
   }
 } catch { /* no options */ }
+
+// EmulatorJS applies default options once the emulator core is running. That
+// is too late for the ones a core reads only while it starts (the N64 CPU
+// timing is one of those). The core's option file is written just before the
+// core starts, from the player's saved settings, so the options a game needs
+// are added to that file here.
+function setAtStartup(options) {
+  let emulator;
+  Object.defineProperty(window, 'EJS_emulator', {
+    configurable: true,
+    enumerable: true,
+    get: () => emulator,
+    set(value) {
+      emulator = value;
+      if (!value || typeof value.getCoreSettings !== 'function') return;
+      const saved = value.getCoreSettings.bind(value);
+      value.getCoreSettings = () => {
+        const lines = String(saved() || '').split('\n').filter((line) => line.trim() && !(line.split('=')[0].trim() in options));
+        for (const [key, v] of Object.entries(options)) lines.push(`${key} = "${v}"`);
+        return lines.join('\n') + '\n';
+      };
+    },
+  });
+}
 
 const s = document.createElement('script');
 s.src = dataPath + 'loader.js';
