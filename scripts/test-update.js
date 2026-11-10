@@ -9,7 +9,10 @@
 //      and come back up on 99.0.0 by itself;
 //   3. 99.2.0, which quits without a word every time it starts: after three
 //      such starts the app has to set it aside and come up on 99.0.0 again;
-//   4. started with --installed-code, the app has to ignore every update and
+//   4. 99.3.0, which starts but never opens a window: the app has to give up
+//      on it after a while (20 seconds in this test, two minutes normally) and come back up on
+//      99.0.0 by itself;
+//   5. started with --installed-code, the app has to ignore every update and
 //      run the code it was installed with.
 //
 // The test versions are made from the app's own code (scripts/make-update.js).
@@ -60,7 +63,7 @@ async function main() {
   // ---- the three test versions ----
   const base = opts.source ? { source: true } : { app: opts.app };
   const made = {};
-  for (const [version, fault] of [['99.0.0'], ['99.1.0', 'throws'], ['99.2.0', 'quits']]) {
+  for (const [version, fault] of [['99.0.0'], ['99.1.0', 'throws'], ['99.2.0', 'quits'], ['99.3.0', 'hangs']]) {
     made[version] = (await make({ ...base, version, fault, out: path.join(feed, `v${version}`) })).manifest;
     console.log(`made test update ${version}${fault ? ` (${fault})` : ''}: ${made[version].files.map((f) => f.to).join(', ')}`);
   }
@@ -87,9 +90,9 @@ async function main() {
   const exe = opts.source ? require('electron') : path.join(opts.app, 'Contents', 'MacOS', path.basename(opts.app, '.app'));
   const baseArgs = opts.source ? [ROOT, ...(process.platform === 'linux' ? ['--no-sandbox'] : [])] : [];
   const output = [];
-  const launch = (...extra) => {
-    const child = spawn(exe, [...baseArgs, '--update-test', ...extra], {
-      env: { ...process.env, DL_USER_DATA: data, DL_UPDATE_FEED: address, DL_TEST_LOG: logFile },
+  const launch = ({ args = [], env = {} } = {}) => {
+    const child = spawn(exe, [...baseArgs, '--update-test', ...args], {
+      env: { ...process.env, DL_USER_DATA: data, DL_UPDATE_FEED: address, DL_TEST_LOG: logFile, ...env },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     const keepOutput = (d) => output.push(...String(d).split('\n').filter(Boolean));
@@ -114,9 +117,9 @@ async function main() {
     throw new Error(`Timed out after ${seconds} seconds waiting for ${what}`);
   };
   // One run of the app, restarts included, up to its closing line.
-  const runToEnd = async (what, ...extra) => {
+  const runToEnd = async (what, how) => {
     const from = lines().length;
-    launch(...extra);
+    launch(how);
     const got = await waitFor(what, 240, () => {
       const seen = lines().slice(from);
       return seen.some((l) => /^\[update-test\] (done|FAILED)/.test(l)) ? seen : null;
@@ -197,9 +200,18 @@ async function main() {
     check('99.2.0 was set aside too', run.done.bad.slice().sort(), ['99.1.0', '99.2.0']);
     console.log(`      why: ${state().bad && state().bad['99.2.0']}`);
 
-    // ---- 4. the way out ----
-    console.log('\n4. Started with --installed-code');
-    run = await runToEnd('the start with --installed-code', '--installed-code');
+    // ---- 4. an update that starts but never shows a window ----
+    console.log('\n4. An update that starts but never opens a window (99.3.0)');
+    publish('99.3.0');
+    run = await runToEnd('the update that hangs', { env: { DL_BOOT_PATIENCE: '20' } });
+    check('the steps', run.steps, ['running 99.0.0 from an update pack', 'installed 99.3.0, restarting', 'running 99.0.0 from an update pack']);
+    check('it is back on 99.0.0', [run.done.version, real(run.done.pack || '')], ['99.0.0', pack('99.0.0')]);
+    check('99.3.0 was set aside as well', run.done.bad.slice().sort(), ['99.1.0', '99.2.0', '99.3.0']);
+    console.log(`      why: ${state().bad && state().bad['99.3.0']}`);
+
+    // ---- 5. the way out ----
+    console.log('\n5. Started with --installed-code');
+    run = await runToEnd('the start with --installed-code', { args: ['--installed-code'] });
     check('the steps', run.steps, [`running ${installed} from the installed code`]);
     check('it runs the installed code', [run.done.version, run.done.pack], [installed, null]);
   } catch (err) {

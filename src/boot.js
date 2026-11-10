@@ -12,6 +12,8 @@
 //   pack             the pack that is running ({ version, dir, ... }), or null
 //   started()        "my window is up": the pack is now known to work
 //   failed(why)      "I can't run": set the pack aside and start again without it
+// A pack has to call started() within two minutes of being started, or it is
+// treated as failed.
 'use strict';
 const { app } = require('electron');
 const path = require('path');
@@ -25,21 +27,30 @@ else if (process.argv.includes('--smoke-test')) app.setPath('userData', path.joi
 
 const updates = path.join(app.getPath('userData'), 'updates');
 const SKIP = '--installed-code'; // start without any update pack (also a way out if one misbehaves)
+// How long a pack gets to say "my window is up". The pack's own code notices
+// trouble sooner (see main.js); this is the backstop for one that can't even
+// do that. (DL_BOOT_PATIENCE, in seconds, is for the update test.)
+const asked = Number(process.env.DL_BOOT_PATIENCE);
+const PATIENCE = asked >= 2 && asked <= 600 ? asked : 120;
 
 function contract(pack) {
   let over = false;
-  return {
+  let backstop = null;
+  const self = {
     api: 1,
     bundledVersion,
     updates,
     pack,
     started() {
-      if (pack && !over) packs.noteGood(fs, updates, pack.version);
+      if (!pack || over) return;
       over = true;
+      clearTimeout(backstop);
+      packs.noteGood(fs, updates, pack.version);
     },
     failed(why) {
       if (!pack || over) return;
       over = true;
+      clearTimeout(backstop);
       console.error(`[boot] update ${pack.version} set aside: ${why}`);
       const saved = packs.markBad(fs, updates, pack.version, why);
       // Start again in a fresh process. If the note could not be saved, tell
@@ -49,6 +60,8 @@ function contract(pack) {
       app.exit(0);
     },
   };
+  if (pack) backstop = setTimeout(() => self.failed(`did not come up within ${PATIENCE} seconds`), PATIENCE * 1000);
+  return self;
 }
 
 let pack = null;

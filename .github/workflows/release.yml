@@ -154,9 +154,9 @@ jobs:
 
       # The Update button for real: the packaged app takes test updates from a
       # stand-in for GitHub on this machine. A good one has to end up running,
-      # with its own copy of the player; one that fails at start and one that
-      # never comes up have to be set aside, with the app back on the last
-      # version that worked (scripts/test-update.js).
+      # with its own copy of the player; ones that fail at start, quit at start
+      # or never open a window have to be set aside, with the app back on the
+      # last version that worked (scripts/test-update.js).
       - name: Test updating the app
         run: node scripts/test-update.js --app "$APP"
 

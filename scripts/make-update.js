@@ -17,6 +17,7 @@
 //   --version 99.0.0    calling itself version 99.0.0
 //   --fault throws      ...and failing as soon as it starts
 //   --fault quits       ...and quitting without a word as soon as it starts
+//   --fault hangs       ...and starting, but never opening a window
 'use strict';
 const fs = require('fs');
 const os = require('os');
@@ -29,6 +30,7 @@ const ROOT = path.join(__dirname, '..');
 const FAULTS = {
   throws: "throw new Error('this test update is broken on purpose');\n",
   quits: "require('electron').app.exit(0); // a test update that never comes up\n",
+  hangs: "setInterval(() => {}, 1000); // a test update that starts and then does nothing\n",
 };
 
 function parseArgs(argv) {
