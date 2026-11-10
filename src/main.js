@@ -16,7 +16,7 @@ const pkg = require('../package.json');
 // app's data folder. boot.js decides which, and says so here (see boot.js).
 const boot = global.devious || {
   api: 0, bundledVersion: pkg.version, updates: null, pack: null, skipped: [], rules: packs,
-  accepts: () => '', started() {}, failed() {}, excused() {},
+  accepts: () => '', started() {}, failed() {}, excused() {}, restartInstalled() {},
 };
 const ROOT = path.join(__dirname, '..');
 // The folder that holds app.asar and player/ side by side: Contents/Resources
@@ -636,6 +636,14 @@ async function updateTest() {
   try {
     say(`[update-test] running ${pkg.version} from ${boot.pack ? 'an update pack' : 'the installed code'}`);
     if (!TEST_FEED) throw new Error('DL_UPDATE_FEED has to be an http://127.0.0.1:<port>/ address');
+    // For the test of the way back: leave for the installed code, the way
+    // the "Restart Without Updates" item in the Dock does.
+    if (process.env.DL_TEST_LEAVE && boot.pack) {
+      say(`[update-test] leaving ${pkg.version} for the installed code`);
+      clearTimeout(giveUp);
+      boot.restartInstalled();
+      return;
+    }
     // For the test of two copies at once: stay open until the file named in DL_TEST_HOLD appears.
     if (process.env.DL_TEST_HOLD) {
       say(`[update-test] holding ${process.pid}`);

@@ -28,7 +28,8 @@
 //   - versions are plain x.y.z;
 //   - a pack is described by pack.json in format 1 (checkManifest below): up
 //     to 500 plain files, each up to 2 GB, up to eight folders deep, with
-//     plain ASCII names, one of them app.asar at the top;
+//     plain ASCII names that start with a letter, a digit or an underscore,
+//     one of them app.asar (spelled just so) at the top;
 //   - it must be newer than the installed app, made for the same major
 //     version of the engine (Electron), and the installed app must be at
 //     least its "needsApp";
@@ -44,7 +45,7 @@ const FORMAT = 1;
 const MAX_STARTS = 3; // a pack gets this many starts in a row without reporting in; at the next one it is set aside
 const VERSION = /^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/; // a file's name on the release page
-const PART = /^[A-Za-z0-9][A-Za-z0-9._ +@()=,~-]{0,99}$/; // one level of where it goes inside the pack
+const PART = /^[A-Za-z0-9_][A-Za-z0-9._ +@()=,~-]{0,99}$/; // one level of where it goes inside the pack
 const MAX_FILE = 2 * 1024 * 1024 * 1024; // the most GitHub takes for one release file
 const MAX_FILES = 500;
 const MAX_DEPTH = 8;
@@ -109,7 +110,7 @@ function checkManifest(input) {
     if (typeof f.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(f.sha256)) throw bad('file hash');
     return { name: f.name, to, size: f.size, sha256: f.sha256, exec: f.exec === true };
   });
-  if (!seen.has('app.asar')) throw bad('no app.asar');
+  if (!out.files.some((f) => f.to === 'app.asar')) throw bad('no app.asar'); // (spelled exactly as it is started)
   // No file may sit where another one needs a folder ("a" next to "a/b").
   for (const f of out.files) {
     const parts = f.to.toLowerCase().split('/');
@@ -275,10 +276,13 @@ function unnoteStart(fs, dir, version) {
   return writeState(fs, dir, state);
 }
 
+// A pack that has just reported in as working is not a bad one, whatever
+// another copy of the app may have noted about it in the meantime.
 function noteGood(fs, dir, version) {
   const state = readState(fs, dir);
   state.starts = {};
   state.good = version;
+  delete state.bad[version];
   return writeState(fs, dir, state);
 }
 

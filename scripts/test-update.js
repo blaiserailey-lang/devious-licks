@@ -24,9 +24,12 @@
 //      hand over and quit, without counting against the update;
 //   9. 99.6.0, one of whose files the server sends off to another site: the
 //      app has to refuse to follow, say so, and stay as it is;
-//  10. started with --installed-code, the app has to ignore every update and
+//  10. "Restart Without Updates" (the item the start-up code puts on the
+//      app's Dock icon): the app has to quit and come back up on the code it
+//      was installed with, the update untouched;
+//  11. started with --installed-code, the app has to ignore every update and
 //      run the code it was installed with;
-//  11. ...and when the person there says "stop using it", the update has to
+//  12. ...and when the person there says "stop using it", the update has to
 //      be gone for good: the next plain start runs the installed code too.
 //
 // Every request to the stand-in is first sent on to another address, the way
@@ -332,8 +335,18 @@ async function main() {
     check('nothing changed: still 99.5.0, nothing of 99.6.0 on disk', [run.done.version, fs.readdirSync(updates).filter((n) => n.includes('99.6.0'))], ['99.5.0', []]);
     offSite.clear();
 
-    // ---- 10. the way out ----
-    console.log('\n10. Started with --installed-code');
+    // ---- 10. the way back, from inside the app ----
+    console.log('\n10. Restart Without Updates');
+    publish('99.5.0');
+    run = await runToEnd('the restart without updates', { env: { DL_TEST_LEAVE: '1' } });
+    check('the steps', run.steps, ['running 99.5.0 from an update pack', 'leaving 99.5.0 for the installed code', `running ${installed} from the installed code`]);
+    check('it came back up on the installed code', [run.done.version, run.done.pack, run.done.shown], [installed, null, `Version ${installed}`]);
+    check('the update is untouched and still counts as working', [fs.existsSync(pack('99.5.0')), state().good, Object.keys(state().bad || {}).includes('99.5.0'), starts('99.5.0')], [true, '99.5.0', false, 0]);
+    run = await runToEnd('the plain start after it');
+    check('a plain start afterwards runs the update again', [run.steps, run.done.version], [['running 99.5.0 from an update pack'], '99.5.0']);
+
+    // ---- 11. the way out ----
+    console.log('\n11. Started with --installed-code');
     publish('99.5.0');
     run = await runToEnd('the start with --installed-code', { args: ['--installed-code'] });
     check('the steps', run.steps, [`running ${installed} from the installed code`]);
@@ -341,8 +354,8 @@ async function main() {
     check('...and sees the update waiting on the disk', [run.done.phase, run.done.latest, run.done.label], ['ready', '99.5.0', 'Restart to finish']);
     check('nothing was switched off without being asked', [fs.existsSync(pack('99.5.0')), state().good], [true, '99.5.0']);
 
-    // ---- 11. ...and for good ----
-    console.log('\n11. Switching the update off from there');
+    // ---- 12. ...and for good ----
+    console.log('\n12. Switching the update off from there');
     run = await runToEnd('the start that switches the update off', { args: ['--installed-code'], env: { DL_TEST_ANSWER: 'stop' } });
     check('the steps', run.steps, ['switched off 99.5.0', `running ${installed} from the installed code`]);
     check('the update is set aside and its files are gone', [(state().bad || {})['99.5.0'], state().good || null, fs.existsSync(pack('99.5.0')), fs.existsSync(path.join(updates, 'current.json'))], ['switched off by hand', null, false, false]);

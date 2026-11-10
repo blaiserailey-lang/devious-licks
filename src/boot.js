@@ -32,9 +32,18 @@
 //   excused()        "don't count this start": for one that proves nothing
 //                    about the pack (a second copy of the app that hands over
 //                    to the one already open, a quit before it could tell)
+//   restartInstalled()  "go back to the code the app was installed with":
+//                    quits and starts the app again with every pack passed
+//                    over, as --installed-code does (the installed code then
+//                    asks whether to stop using the update)
 // Of started, failed and excused only the first call counts, and none of
-// them does anything while the installed code is running. None of this
+// these does anything while the installed code is running. None of this
 // throws.
+//
+// While a pack runs, the app's icon in the Dock also gets a menu item,
+// "Restart Without Updates", which does the same as restartInstalled(). It
+// is put there by this file, so no update can leave a Mac without a way back
+// (short of taking the item away on purpose).
 'use strict';
 const { app } = require('electron');
 const path = require('path');
@@ -115,6 +124,21 @@ function contract(pack, skipped) {
       }
     },
   };
+  let leaving = false;
+  self.restartInstalled = () => {
+    if (!pack || leaving) return;
+    leaving = true;
+    try {
+      const args = process.argv.slice(1).filter((a) => a !== SKIP);
+      app.relaunch({ args: [...args, SKIP] });
+      // The pack gets a few seconds to close down in its own way (its games,
+      // their saves); one that won't go is not asked twice.
+      setTimeout(() => app.exit(0), 5000);
+      app.quit();
+    } catch {
+      app.exit(0);
+    }
+  };
   if (pack) {
     // Counted in short steps instead of one long timer: a timer keeps
     // running while the Mac sleeps, and a pack must not be failed for the
@@ -153,6 +177,18 @@ if (!process.argv.includes(SKIP) && (app.isPackaged || process.env.DL_USER_DATA)
 if (pack) {
   global.devious = contract(pack, skipped);
   console.log(`[boot] Devious Licks ${pack.version} (update pack; installed app ${bundledVersion})`);
+  if (process.platform === 'darwin') {
+    // The way back that needs no Terminal: right-click the icon in the Dock.
+    app
+      .whenReady()
+      .then(() => {
+        const { Menu } = require('electron');
+        app.dock.setMenu(Menu.buildFromTemplate([{ label: 'Restart Without Updates', click: () => global.devious.restartInstalled() }]));
+      })
+      .catch(() => {
+        /* the app works without the item */
+      });
+  }
   try {
     require(path.join(pack.dir, 'app.asar', 'src', 'main.js'));
   } catch (err) {

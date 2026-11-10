@@ -21,7 +21,7 @@ test('versions compare by number, and only real versions count', () => {
 });
 
 test('a file may only land inside the pack folder', () => {
-  for (const fine of ['app.asar', 'player/dl-player', 'a/b/c/d/e/f/g/h', 'cores/N64 (v2)/libretro+gl@1,2=x~.dylib', `${'n'.repeat(100)}`]) {
+  for (const fine of ['app.asar', 'player/dl-player', 'a/b/c/d/e/f/g/h', 'cores/N64 (v2)/libretro+gl@1,2=x~.dylib', `${'n'.repeat(100)}`, 'X.framework/_CodeSignature/CodeResources', '__init__.py']) {
     assert.strictEqual(packs.safeTarget(fine), fine);
   }
   for (const odd of [
@@ -235,6 +235,26 @@ test('a damaged state file counts as empty', () => {
     fs.writeFileSync(path.join(dir, 'state.json'), junk);
     assert.strictEqual(choose(dir).version, '0.3.3', junk);
   }
+});
+
+test('the code file has to be spelled app.asar, exactly', () => {
+  const file = (to) => ({ name: 'app.asar', to, size: 10, sha256: 'a'.repeat(64) });
+  const info = (to) => ({ format: 1, version: '0.3.3', electron: '45.2.3', files: [file(to)] });
+  assert.strictEqual(packs.checkManifest(info('app.asar')).files[0].to, 'app.asar');
+  for (const odd of ['App.asar', 'APP.ASAR', 'app.Asar', 'sub/app.asar']) assert.throws(() => packs.checkManifest(info(odd)), /no app\.asar/, odd);
+});
+
+test('a pack that reports in as working is no longer set aside', () => {
+  // (a second copy of the app, started while the first was on its third try, can note it as bad)
+  const dir = tmp();
+  makePack(dir, '0.3.3');
+  current(dir, '0.3.3');
+  for (let n = 0; n < 3; n++) assert.ok(packs.noteStart(fs, dir, '0.3.3'));
+  assert.strictEqual(choose(dir), null, 'the second copy passes it over');
+  assert.ok(packs.isBad(packs.readState(fs, dir), '0.3.3'));
+  assert.ok(packs.noteGood(fs, dir, '0.3.3'), 'the first copy comes up');
+  assert.deepStrictEqual(packs.readState(fs, dir), { good: '0.3.3', starts: {}, bad: {} });
+  assert.strictEqual(choose(dir).version, '0.3.3');
 });
 
 test('a start count that is not a count is read as none, and the next start counts from one', () => {

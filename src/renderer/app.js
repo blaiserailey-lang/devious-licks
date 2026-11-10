@@ -103,7 +103,7 @@ function summarize(s) {
   if (s.added.length) parts.push(`New: ${s.added.join(', ')}`);
   if (s.updated.length) parts.push(`Updated: ${s.updated.join(', ')}`);
   if (s.removed.length) parts.push(`Removed: ${s.removed.join(', ')}`);
-  return parts.length ? parts.join(' · ') : 'Everything is up to date.';
+  return parts.length ? parts.join(' · ') : 'Your games are up to date.';
 }
 
 async function refresh() {
