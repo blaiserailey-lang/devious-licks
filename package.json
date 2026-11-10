@@ -1,9 +1,9 @@
 {
   "name": "devious-licks",
   "productName": "Devious Licks",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "The Devious Licks game library: every Devious Licks game, kept up to date, with a built-in emulator.",
-  "main": "src/main.js",
+  "main": "src/boot.js",
   "private": true,
   "license": "UNLICENSED",
   "author": "Devious Licks",
@@ -13,6 +13,10 @@
       "repo": "devious-licks",
       "branch": "main",
       "path": "catalog"
+    },
+    "update": {
+      "needsApp": "0.3.2",
+      "notes": ""
     }
   },
   "scripts": {
@@ -58,6 +62,7 @@
     ]
   },
   "devDependencies": {
+    "@electron/asar": "3.4.1",
     "@emulatorjs/core-fceumm": "4.2.3",
     "@emulatorjs/core-gambatte": "4.2.3",
     "@emulatorjs/core-genesis_plus_gx": "4.2.3",

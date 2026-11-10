@@ -1,21 +1,32 @@
 const { app, BrowserWindow, ipcMain, protocol, net, shell, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const { spawn } = require('child_process');
+const originalFs = require('original-fs'); // sees app.asar as a file (Electron's own fs treats it as a folder)
+const { spawn, spawnSync } = require('child_process');
 const { pathToFileURL } = require('url');
 const { Library, githubSource, folderSource } = require('./catalog');
 const { LocalGames, EXTENSIONS } = require('./local');
 const n64 = require('./n64');
+const packs = require('./packs');
+const { Updater } = require('./updater');
 const pkg = require('../package.json');
 
+// This code runs either from the installed app or from an update pack in the
+// app's data folder. boot.js decides which, and says so here (see boot.js).
+const boot = global.devious || { api: 0, bundledVersion: pkg.version, updates: null, pack: null, started() {}, failed() {} };
 const ROOT = path.join(__dirname, '..');
+// The folder that holds app.asar and player/ side by side: Contents/Resources
+// in the installed app, <pack> in an update pack. (null when run from source.)
+const HOME = /\.asar$/.test(ROOT) ? path.join(ROOT, '..') : null;
 
 // "--smoke-test" (the release workflow runs the packaged app with it): start
 // as usual, check that the library window came up with its bridge to this
 // process and that the built-in N64 player is where the app looks for it,
-// print the verdict and quit. It keeps its files out of the real library.
+// print the verdict and quit. (boot.js keeps its files out of the real library.)
 const SMOKE = process.argv.includes('--smoke-test');
-if (SMOKE) app.setPath('userData', path.join(app.getPath('temp'), `devious-licks-smoke-${process.pid}`));
+// "--update-test" (also the release workflow): take an update from a stand-in
+// for GitHub on this machine, restart into it and report. See updateTest().
+const UPDATE_TEST = process.argv.includes('--update-test');
 
 // app://app/...    -> files bundled with the app (UI, EmulatorJS, cores)
 // app://rom/<file> -> a downloaded ROM from the library cache
@@ -176,7 +187,7 @@ async function addLocal(files) {
 // Mupen64Plus core). Option-click still forces the built-in emulator.
 const N64_CORES = new Set(['n64', 'mupen64plus_next']);
 const NATIVE_CORES = { n64: 'mupen64plus_next_libretro.dylib', mupen64plus_next: 'mupen64plus_next_libretro.dylib' };
-const PLAYER_DIR = app.isPackaged ? path.join(process.resourcesPath, 'player') : path.join(ROOT, 'player', 'dist');
+const PLAYER_DIR = HOME ? path.join(HOME, 'player') : path.join(ROOT, 'player', 'dist');
 const PLAYER_ICON = app.isPackaged ? path.join(process.resourcesPath, 'icon.icns') : path.join(ROOT, 'build', 'icon.png');
 const nativePlayers = new Map();
 
@@ -224,7 +235,7 @@ function openNative(game, romPath, native, options, diagnose) {
   try {
     fs.mkdirSync(path.dirname(logFile), { recursive: true });
     log = fs.openSync(logFile, 'w');
-    fs.writeSync(log, `Devious Licks ${app.getVersion()} on macOS ${process.getSystemVersion()} (${process.arch})\n${game.title} [${game.core}] ${JSON.stringify(options)}${diagnose ? ' with the graphics recorder on' : ''}\n\n`);
+    fs.writeSync(log, `Devious Licks ${pkg.version}${boot.pack ? ` (update on installed app ${boot.bundledVersion})` : ''} on macOS ${process.getSystemVersion()} (${process.arch})\n${game.title} [${game.core}] ${JSON.stringify(options)}${diagnose ? ' with the graphics recorder on' : ''}\n\n`);
   } catch {
     log = 'ignore';
   }
@@ -282,14 +293,92 @@ function friendlyError(err) {
   return msg;
 }
 
+// ---------- the Update button (see updater.js and packs.js) ----------
+const REPO = `${pkg.deviousLicks.catalog.owner}/${pkg.deviousLicks.catalog.repo}`;
+const RELEASES = `https://github.com/${REPO}/releases`;
+// Only the update test may point the app at another place, and only at this machine.
+const TEST_FEED = UPDATE_TEST && /^http:\/\/127\.0\.0\.1:\d{2,5}\/[\w./-]*$/.test(process.env.DL_UPDATE_FEED || '') ? process.env.DL_UPDATE_FEED : null;
+let updater;
+
+function makeUpdater() {
+  return new Updater({
+    fs: originalFs,
+    fetch: (url, options) => net.fetch(url, options),
+    dir: boot.updates || path.join(app.getPath('userData'), 'updates'),
+    feed: TEST_FEED || `${RELEASES}/latest/download/update.json`,
+    fileUrl: (version, name) =>
+      TEST_FEED ? new URL(`v${version}/${encodeURIComponent(name)}`, TEST_FEED).toString() : `${RELEASES}/download/v${version}/${encodeURIComponent(name)}`,
+    // GitHub hands release files out from its own download servers.
+    allowed: (url) =>
+      TEST_FEED ? url.startsWith(new URL('/', TEST_FEED).toString()) : /^https:\/\/([a-z0-9-]+\.)*(github\.com|githubusercontent\.com)\//.test(url),
+    // Files that are the same in the new version are copied from here.
+    running: {
+      version: pkg.version,
+      bundledVersion: boot.bundledVersion,
+      electron: process.versions.electron,
+      places: [...new Set([HOME, app.isPackaged ? process.resourcesPath : null].filter(Boolean))],
+    },
+    onChange: (state) => libraryWindow && !libraryWindow.isDestroyed() && libraryWindow.webContents.send('update:state', state),
+    page: `${RELEASES}/latest`,
+  });
+}
+
+async function restartIntoUpdate() {
+  if (nativePlayers.size || playerWindows.size) {
+    const choice = await dialog.showMessageBox(libraryWindow, {
+      type: 'question',
+      buttons: ['Restart', 'Later'],
+      defaultId: 0,
+      cancelId: 1,
+      message: 'Restart Devious Licks to finish the update?',
+      detail: 'A game is open. Restarting closes it. Battery saves are kept; anything else since your last save in the game is lost.',
+    });
+    if (choice.response !== 0) return false;
+  }
+  app.relaunch({ args: process.argv.slice(1).filter((a) => a !== '--installed-code') });
+  app.quit();
+  return true;
+}
+
+// An update pack has to prove itself: its window has to come up within a
+// minute of starting. If it doesn't, or the code fails on the way there, the
+// pack is set aside and the app starts again without it (boot.failed).
+let up = false;
+const stumbled = (err) => boot.failed(`failed while starting: ${String((err && err.stack) || err).slice(0, 240)}`);
+const upTimer = boot.pack ? setTimeout(() => boot.failed('its window did not come up within a minute'), 60000) : null;
+if (boot.pack) {
+  process.on('uncaughtException', stumbled);
+  process.on('unhandledRejection', stumbled);
+}
+
+function cameUp() {
+  if (up) return;
+  up = true;
+  clearTimeout(upTimer);
+  process.removeListener('uncaughtException', stumbled);
+  process.removeListener('unhandledRejection', stumbled);
+  boot.started();
+  updater.tidy();
+  if (UPDATE_TEST) updateTest();
+}
+
 app.whenReady().then(async () => {
+  updater = makeUpdater();
   library = new Library(path.join(app.getPath('userData'), 'library'), makeSource());
   await library.load();
   local = new LocalGames(path.join(app.getPath('userData'), 'local-games'));
   await local.load();
   registerProtocol();
 
-  ipcMain.handle('library:get', () => view());
+  ipcMain.handle('library:get', () => {
+    cameUp(); // the window is up and talking to this process
+    return view();
+  });
+  ipcMain.handle('update:get', () => updater.view());
+  ipcMain.handle('update:check', () => updater.check());
+  ipcMain.handle('update:install', () => updater.install());
+  ipcMain.handle('update:restart', () => restartIntoUpdate());
+  ipcMain.handle('update:page', () => shell.openExternal(`${RELEASES}/latest`));
   ipcMain.handle('local:add', (_e, files) => addLocal(Array.isArray(files) ? files.filter((f) => typeof f === 'string') : []));
   ipcMain.handle('local:remove', async (_e, id) => {
     const choice = await dialog.showMessageBox(libraryWindow, {
@@ -314,7 +403,7 @@ app.whenReady().then(async () => {
 
 function smokeTest() {
   const finish = (ok, details) => {
-    console.log(`[smoke] ${ok ? 'ok' : 'FAILED'} ${JSON.stringify({ version: app.getVersion(), chip: process.arch, ...details })}`);
+    console.log(`[smoke] ${ok ? 'ok' : 'FAILED'} ${JSON.stringify({ version: pkg.version, chip: process.arch, ...details })}`);
     fs.rmSync(app.getPath('userData'), { recursive: true, force: true });
     app.exit(ok ? 0 : 1);
   };
@@ -336,6 +425,77 @@ function smokeTest() {
       finish(false, { why: String((err && err.message) || err) });
     }
   });
+}
+
+// The update test, one start at a time: say what is running; when the stand-in
+// for GitHub has something newer that hasn't failed here before, take it and
+// restart; otherwise report where things ended up and quit. The release
+// workflow reads the lines this writes (DL_TEST_LOG) and judges them.
+async function updateTest() {
+  const say = (line) => {
+    console.log(line);
+    try {
+      if (process.env.DL_TEST_LOG) fs.appendFileSync(process.env.DL_TEST_LOG, `${line}\n`);
+    } catch {
+      /* the console has it */
+    }
+  };
+  const giveUp = setTimeout(() => {
+    say('[update-test] FAILED: no result after 90 seconds');
+    app.exit(1);
+  }, 90000);
+  try {
+    say(`[update-test] running ${pkg.version} from ${boot.pack ? 'an update pack' : 'the installed code'}`);
+    if (!TEST_FEED) throw new Error('DL_UPDATE_FEED has to be an http://127.0.0.1:<port>/ address');
+    const found = await updater.check();
+    if (found.phase === 'available' && !found.failedBefore) {
+      const done = await updater.install();
+      if (done.phase !== 'ready') throw new Error(`the update did not install: ${done.error}`);
+      say(`[update-test] installed ${done.latest}, restarting`);
+      clearTimeout(giveUp);
+      app.relaunch();
+      app.exit(0);
+      return;
+    }
+    // Where things ended up. The player has to run from wherever this code
+    // found it: for a pack that is the copy the update brought along.
+    const native = nativeCoreFor({ core: 'n64' });
+    let player = null;
+    if (native) {
+      const run = spawnSync(native.bin, ['--check', '--core', native.core], { encoding: 'utf8', timeout: 30000 });
+      player = run.status === 0 ? run.stdout.trim() : `FAILED (${run.status === null ? run.signal || (run.error && run.error.code) : run.status}) ${String(run.stderr || '').trim().slice(-200)}`;
+    }
+    // What the window shows (it fills in the version a moment after it loads).
+    const page = await libraryWindow.webContents.executeJavaScript(`new Promise((resolve) => {
+      const start = Date.now();
+      (function look() {
+        const button = document.getElementById('update');
+        const version = document.getElementById('version');
+        if ((version && version.textContent) || Date.now() - start > 10000) resolve({ button: Boolean(button), shown: version ? version.textContent : null });
+        else setTimeout(look, 50);
+      })();
+    })`);
+    say(`[update-test] done ${JSON.stringify({
+      pid: process.pid,
+      version: pkg.version,
+      installed: boot.bundledVersion,
+      pack: boot.pack ? boot.pack.dir : null,
+      phase: found.phase,
+      latest: found.latest || null,
+      failedBefore: Boolean(found.failedBefore),
+      error: found.error || null,
+      bad: Object.keys(packs.readState(originalFs, updater.dir).bad),
+      playerDir: native ? path.dirname(native.bin) : null,
+      player,
+      ...page,
+    })}`);
+    clearTimeout(giveUp);
+    app.exit(0);
+  } catch (err) {
+    say(`[update-test] FAILED: ${String((err && err.message) || err)}`);
+    clearTimeout(giveUp);
+    app.exit(1);
+  }
 }
 
 app.on('before-quit', () => {

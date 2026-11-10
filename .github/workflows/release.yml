@@ -1,9 +1,11 @@
-# Builds the Mac app and publishes the DMG to GitHub Releases.
+# Builds the Mac app and publishes it to GitHub Releases: the DMG (the first
+# install) and the update files (what the app's Update button downloads).
 # To ship a new version: bump "version" in package.json, then either push a tag
 # (git tag v0.2.0 && git push origin v0.2.0) or create a release named v0.2.0 on
-# GitHub's Releases page. The DMG gets attached to that release.
-# Friends always download the newest build from:
+# GitHub's Releases page. The tag has to be "v" plus that version.
+# Friends download the app once from:
 #   https://github.com/<owner>/<repo>/releases/latest
+# and from then on click Update inside the app.
 name: Release Mac app
 
 on:
@@ -118,6 +120,7 @@ jobs:
           APP="$(find dist -maxdepth 2 -name '*.app' -path '*mac-universal/*' | head -1)"
           [ -n "$APP" ] || APP="$(find dist -maxdepth 2 -name '*.app' | head -1)"
           echo "App: $APP"
+          echo "APP=$APP" >> "$GITHUB_ENV"
           test -d "$APP/Contents/Resources/player"
           for part in "Contents/MacOS/Devious Licks" "Contents/Frameworks/Electron Framework.framework/Electron Framework" \
             Contents/Resources/player/dl-player Contents/Resources/player/mupen64plus_next_libretro.dylib; do
@@ -137,10 +140,32 @@ jobs:
           codesign -dv "$APP/Contents/Resources/player/dl-player" 2>&1 | sed -n '1,8p'
           PLAYER_DIR="$PWD/$APP/Contents/Resources/player" player/selftest.sh
 
+      # What the Update button downloads: the app's code and the built-in
+      # player as plain files, and update.json, which lists them with their
+      # sizes and checksums (scripts/make-update.js, src/packs.js).
+      - name: Make the update files
+        run: |
+          node scripts/make-update.js --app "$APP"
+          cat dist/update/update.json
+          for f in dl-player mupen64plus_next_libretro.dylib; do
+            codesign --verify --strict "dist/update/$f"
+            echo "$f: $(lipo -archs "dist/update/$f"), signature ok"
+          done
+
+      # The Update button for real: the packaged app takes test updates from a
+      # stand-in for GitHub on this machine. A good one has to end up running,
+      # with its own copy of the player; one that fails at start and one that
+      # never comes up have to be set aside, with the app back on the last
+      # version that worked (scripts/test-update.js).
+      - name: Test updating the app
+        run: node scripts/test-update.js --app "$APP"
+
       - uses: actions/upload-artifact@v4
         with:
           name: dmg
-          path: dist/*.dmg
+          path: |
+            dist/*.dmg
+            dist/update/update.json
 
       # Tag push / published release: attach to that tag. Manual "Run workflow":
       # create (or update) the release v<version from package.json>, unless
@@ -148,10 +173,22 @@ jobs:
       - name: Pick release tag
         id: tag
         if: github.event_name != 'workflow_dispatch' || inputs.publish
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          if [ -n "${{ github.event.release.tag_name }}" ]; then echo "name=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.ref_type }}" = "tag" ]; then echo "name=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
-          else echo "name=v$(node -p 'require("./package.json").version')" >> "$GITHUB_OUTPUT"; fi
+          WANT="v$(node -p 'require("./package.json").version')"
+          if [ -n "$RELEASE_TAG" ]; then NAME="$RELEASE_TAG"
+          elif [ "$REF_TYPE" = "tag" ]; then NAME="$REF_NAME"
+          else NAME="$WANT"; fi
+          # The Update button fetches a version's files from the release named
+          # "v" + that version, so the two have to agree.
+          if [ "$NAME" != "$WANT" ]; then
+            echo "::error::The release is called $NAME, but package.json says version ${WANT#v}. Bump \"version\" in package.json (or name the release $WANT) and run this again."
+            exit 1
+          fi
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
 
       - name: Publish release
         if: github.event_name != 'workflow_dispatch' || inputs.publish
@@ -161,3 +198,16 @@ jobs:
           target_commitish: ${{ github.sha }}
           files: dist/*.dmg
           generate_release_notes: true
+
+      # The update files go up after the DMG, and update.json last of all: it
+      # is what tells the apps out there that this version exists, and by then
+      # every file it lists is in place.
+      - name: Publish the update files
+        if: github.event_name != 'workflow_dispatch' || inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.name }}
+        run: |
+          find dist/update -type f ! -name update.json -print0 | xargs -0 gh release upload "$TAG" --clobber
+          gh release upload "$TAG" dist/update/update.json --clobber
+          gh release view "$TAG" --json assets --jq '.assets[] | "\(.name)  \(.size) bytes"'

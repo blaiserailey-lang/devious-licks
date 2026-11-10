@@ -154,6 +154,64 @@ window.addEventListener('drop', (e) => {
   if (e.dataTransfer.files.length) addLocal(e.dataTransfer.files);
 });
 
+// ---------- the Update button ----------
+// One button; its label says what a click does next:
+//   Update -> Checking… -> Update to 0.3.3 -> Updating… 40% -> (the app restarts on 0.3.3)
+// The app looks for a new version by itself when it opens, so the button
+// already reads "Update to 0.3.3" when there is one. Nothing is downloaded
+// until it is clicked.
+let update = { phase: 'idle' };
+
+function megabytes(bytes) {
+  return `${Math.max(1, Math.round(bytes / 1048576))} MB`;
+}
+
+function showUpdate(next) {
+  if (next) update = next;
+  const btn = $('update');
+  const label = {
+    checking: 'Checking…',
+    available: `Update to ${update.latest}`,
+    downloading: `Updating… ${update.percent || 0}%`,
+    ready: 'Restart to finish',
+    download: `Get ${update.latest}`,
+  }[update.phase] || 'Update';
+  btn.querySelector('span').textContent = label;
+  btn.disabled = update.phase === 'checking' || update.phase === 'downloading';
+  btn.classList.toggle('spinning', update.phase === 'checking');
+  btn.classList.toggle('ready', ['available', 'ready', 'download'].includes(update.phase));
+  btn.title = {
+    available: `Version ${update.latest} is out${update.size ? ` (a download of up to ${megabytes(update.size)})` : ''}.${update.notes ? ` ${update.notes}` : ''}`,
+    ready: `Version ${update.latest} is downloaded. Restart Devious Licks to start using it.`,
+    download: `Version ${update.latest} needs a fresh download of the app.`,
+  }[update.phase] || 'Get the newest version of Devious Licks';
+  if (update.version) {
+    $('version').textContent = `Version ${update.version}`;
+    $('version').title = update.installed && update.installed !== update.version ? `Updated in place. The installed app is ${update.installed}.` : '';
+  }
+}
+
+async function updateClick() {
+  const api = window.library.update;
+  // Look (unless the app already knows), then download.
+  if (!['available', 'ready', 'download'].includes(update.phase)) showUpdate(await api.check());
+  if (update.phase === 'available') showUpdate(await api.install());
+  if (update.phase === 'ready') {
+    // Starts the app again on the new version (it asks first when a game is open).
+    if (!(await api.restart())) toast(`Version ${update.latest} is ready. Click "Restart to finish" when you are.`);
+  } else if (update.phase === 'none') {
+    toast(`You have the newest version (${update.version}).`);
+  } else if (update.phase === 'download') {
+    await api.openPage();
+    showStatus(`Version ${update.latest} can't be put in with the Update button: it needs a fresh download. The download page is open in your browser. Get the DMG there and install it the way you did the first time.`);
+  } else if (update.phase === 'error') {
+    showStatus(`The update didn't work. ${update.error}`, true);
+  }
+}
+
+window.library.update.onState(showUpdate);
+$('update').onclick = updateClick;
+
 $('refresh').onclick = refresh;
 $('search').oninput = (e) => { query = e.target.value; render(); };
 document.addEventListener('keydown', (e) => {
@@ -164,4 +222,6 @@ document.addEventListener('keydown', (e) => {
   state = await window.library.get();
   render();
   refresh(); // check for new games every time the app opens
+  showUpdate(await window.library.update.get());
+  showUpdate(await window.library.update.check()); // ...and for a new version of the app
 })();
