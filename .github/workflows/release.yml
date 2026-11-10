@@ -206,6 +206,7 @@ jobs:
         if: github.event_name != 'workflow_dispatch' || inputs.publish
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ steps.tag.outputs.name }}
         run: |
           find dist/update -type f ! -name update.json -print0 | xargs -0 gh release upload "$TAG" --clobber

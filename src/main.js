@@ -13,7 +13,7 @@ const pkg = require('../package.json');
 
 // This code runs either from the installed app or from an update pack in the
 // app's data folder. boot.js decides which, and says so here (see boot.js).
-const boot = global.devious || { api: 0, bundledVersion: pkg.version, updates: null, pack: null, started() {}, failed() {} };
+const boot = global.devious || { api: 0, bundledVersion: pkg.version, updates: null, pack: null, skipped: [], started() {}, failed() {} };
 const ROOT = path.join(__dirname, '..');
 // The folder that holds app.asar and player/ side by side: Contents/Resources
 // in the installed app, <pack> in an update pack. (null when run from source.)
@@ -485,6 +485,7 @@ async function updateTest() {
       failedBefore: Boolean(found.failedBefore),
       error: found.error || null,
       bad: Object.keys(packs.readState(originalFs, updater.dir).bad),
+      skipped: (boot.skipped || []).map((s) => s.version),
       playerDir: native ? path.dirname(native.bin) : null,
       player,
       ...page,

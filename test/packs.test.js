@@ -202,3 +202,25 @@ test('a pack is not started when its start cannot be counted', () => {
   const readOnly = { ...fs, writeFileSync() { throw new Error('EROFS'); } };
   assert.strictEqual(packs.noteStart(readOnly, dir, '0.3.3'), false);
 });
+
+test('choose says which packs it passed over, and why', () => {
+  const dir = tmp();
+  makePack(dir, '0.3.3');
+  makePack(dir, '0.3.4', { electron: '46.0.0' });
+  packs.noteGood(fs, dir, '0.3.3');
+  current(dir, '0.3.4');
+  const skipped = [];
+  assert.strictEqual(packs.choose({ fs, dir, bundledVersion: '0.3.2', electron: '45.2.3', skipped }).version, '0.3.3');
+  assert.strictEqual(skipped.length, 1);
+  assert.strictEqual(skipped[0].version, '0.3.4');
+  assert.match(skipped[0].why, /engine 46\.0\.0/);
+  // set aside, and caught up with by the installed app
+  packs.markBad(fs, dir, '0.3.4', 'threw');
+  const again = [];
+  assert.strictEqual(packs.choose({ fs, dir, bundledVersion: '0.3.3', electron: '45.2.3', skipped: again }), null);
+  assert.deepStrictEqual(again.map((s) => s.version), ['0.3.4', '0.3.3']);
+  assert.match(again[0].why, /set aside: threw/);
+  assert.match(again[1].why, /already at this version/);
+  // and it still works without a list to fill
+  assert.strictEqual(choose(dir, '0.3.2').version, '0.3.3');
+});

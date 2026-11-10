@@ -158,7 +158,7 @@ async function main() {
     check('it runs 99.0.0', run.done.version, '99.0.0');
     check('...from the update in its data folder', real(run.done.pack || ''), pack('99.0.0'));
     check('nothing newer is on offer', [run.done.phase, run.done.error], ['none', null]);
-    check('no update has been set aside', run.done.bad, []);
+    check('no update has been set aside or passed over', [run.done.bad, run.done.skipped], [[], []]);
     check('the window has the Update button and shows the version', [run.done.button, run.done.shown], [true, 'Version 99.0.0']);
     check('the code was downloaded once', hits['/v99.0.0/app.asar'], 1);
     if (hasPlayer) {
@@ -177,6 +177,7 @@ async function main() {
     check('the steps', run.steps, ['running 99.0.0 from an update pack', 'installed 99.1.0, restarting', 'running 99.0.0 from an update pack']);
     check('it is back on 99.0.0', [run.done.version, real(run.done.pack || '')], ['99.0.0', pack('99.0.0')]);
     check('99.1.0 was set aside', run.done.bad, ['99.1.0']);
+    check('...and the start-up code said it passed it over', run.done.skipped, ['99.1.0']);
     check('the button offers 99.1.0 again, knowing it failed here', [run.done.phase, run.done.latest, run.done.failedBefore], ['available', '99.1.0', true]);
     check('the failed download was cleared away', fs.existsSync(pack('99.1.0')), false);
     console.log(`      why: ${state().bad && state().bad['99.1.0']}`);

@@ -153,22 +153,36 @@ function inspect({ fs, dir, version, electron, bundledVersion }) {
 // Which pack should start? The current one, else the last one known to work;
 // null means "the installed code". A pack must be newer than the installed
 // app, complete, made for this app's engine, not set aside as bad, and not on
-// its third failed start in a row.
-function choose({ fs, dir, bundledVersion, electron }) {
+// its third failed start in a row. Every pack that was passed over is added
+// to `skipped` (when given) as { version, why }, so the code that does start
+// can tell the person.
+function choose({ fs, dir, bundledVersion, electron, skipped = [] }) {
   const current = readJson(fs, path.join(dir, 'current.json'));
   const state = readState(fs, dir);
   const candidates = [];
   if (current && parseVersion(current.version)) candidates.push(current.version);
   if (state.good && !candidates.includes(state.good)) candidates.push(state.good);
   for (const version of candidates) {
-    if (!newer(version, bundledVersion)) continue;
-    if (isBad(state, version)) continue;
+    const skip = (why) => skipped.push({ version, why: String(why).slice(0, 300) });
+    if (!newer(version, bundledVersion)) {
+      skip('the installed app is already at this version or later');
+      continue;
+    }
+    if (isBad(state, version)) {
+      skip(`it was set aside: ${state.bad[version]}`);
+      continue;
+    }
     if (Number(state.starts[version]) >= MAX_STARTS) {
-      markBad(fs, dir, version, `did not come up on ${MAX_STARTS} starts in a row`);
+      const why = `did not come up on ${MAX_STARTS} starts in a row`;
+      markBad(fs, dir, version, why);
+      skip(`it was set aside: ${why}`);
       continue;
     }
     const pack = inspect({ fs, dir, version, electron, bundledVersion });
-    if (typeof pack === 'string') continue;
+    if (typeof pack === 'string') {
+      skip(pack);
+      continue;
+    }
     return pack;
   }
   return null;
