@@ -9,11 +9,15 @@ const { LocalGames, EXTENSIONS } = require('./local');
 const n64 = require('./n64');
 const packs = require('./packs');
 const { Updater } = require('./updater');
+const { makeFetch } = require('./transport');
 const pkg = require('../package.json');
 
 // This code runs either from the installed app or from an update pack in the
 // app's data folder. boot.js decides which, and says so here (see boot.js).
-const boot = global.devious || { api: 0, bundledVersion: pkg.version, updates: null, pack: null, skipped: [], started() {}, failed() {} };
+const boot = global.devious || {
+  api: 0, bundledVersion: pkg.version, updates: null, pack: null, skipped: [], rules: packs,
+  accepts: () => '', started() {}, failed() {}, excused() {},
+};
 const ROOT = path.join(__dirname, '..');
 // The folder that holds app.asar and player/ side by side: Contents/Resources
 // in the installed app, <pack> in an update pack. (null when run from source.)
@@ -26,7 +30,51 @@ const HOME = /\.asar$/.test(ROOT) ? path.join(ROOT, '..') : null;
 const SMOKE = process.argv.includes('--smoke-test');
 // "--update-test" (also the release workflow): take an update from a stand-in
 // for GitHub on this machine, restart into it and report. See updateTest().
-const UPDATE_TEST = process.argv.includes('--update-test');
+// (Only with a data folder of its own, named in DL_USER_DATA: the test must
+// never be able to put its made-up versions into somebody's real library.)
+const UPDATE_TEST = process.argv.includes('--update-test') && Boolean(process.env.DL_USER_DATA);
+
+// What the update test reads: the console, and the file named in DL_TEST_LOG.
+function say(line) {
+  if (!UPDATE_TEST) return;
+  console.log(line);
+  try {
+    if (process.env.DL_TEST_LOG) fs.appendFileSync(process.env.DL_TEST_LOG, `${line}\n`);
+  } catch {
+    /* the console has it */
+  }
+}
+
+// One copy of the app at a time. Two sharing a data folder would get in each
+// other's way (two downloads into one folder, one tidying away what the other
+// needs). A second start hands over to the copy that is already open and
+// quits; it says nothing about the update pack it ran from, so it is not
+// counted as one of that pack's starts (boot.excused).
+// (The lock keeps a socket in the temporary folder, and the length of such a
+// path has a hard limit. Where that folder's name is unusually long, the app
+// does without the lock rather than not start at all.)
+const lockable = path.join(app.getPath('temp'), 'scoped_dirXXXXXX', 'SingletonSocket').length < 100;
+const FIRST = SMOKE || !lockable || app.requestSingleInstanceLock();
+if (!FIRST) {
+  boot.excused();
+  say(`[update-test] second copy ${process.pid}: handing over to the one that is open`);
+  app.exit(0);
+}
+
+// Calls `then` once the app has been awake for `seconds` (counted in short
+// steps: one long timer would also count the time the Mac spent asleep).
+// Returns a function that calls it off.
+function after(seconds, then) {
+  const step = Math.min(5, seconds);
+  let left = seconds;
+  const timer = setInterval(() => {
+    left -= step;
+    if (left > 0) return;
+    clearInterval(timer);
+    then();
+  }, step * 1000);
+  return () => clearInterval(timer);
+}
 
 // app://app/...    -> files bundled with the app (UI, EmulatorJS, cores)
 // app://rom/<file> -> a downloaded ROM from the library cache
@@ -96,6 +144,7 @@ function createLibraryWindow() {
   });
   libraryWindow.loadURL('app://app/src/renderer/index.html');
   libraryWindow.on('closed', () => (libraryWindow = null));
+  libraryWindow.webContents.on('render-process-gone', (_e, details) => windowDied(details && details.reason));
   libraryWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:/.test(url)) shell.openExternal(url);
     return { action: 'deny' };
@@ -293,37 +342,49 @@ function friendlyError(err) {
   return msg;
 }
 
-// ---------- the Update button (see updater.js and packs.js) ----------
+// ---------- the Update button (see updater.js, transport.js and packs.js) ----------
 const REPO = `${pkg.deviousLicks.catalog.owner}/${pkg.deviousLicks.catalog.repo}`;
 const RELEASES = `https://github.com/${REPO}/releases`;
 // Only the update test may point the app at another place, and only at this machine.
 const TEST_FEED = UPDATE_TEST && /^http:\/\/127\.0\.0\.1:\d{2,5}\/[\w./-]*$/.test(process.env.DL_UPDATE_FEED || '') ? process.env.DL_UPDATE_FEED : null;
+// Where a download may come from, asked at every step of the way. GitHub
+// passes a request for a release file on to its download servers, and where
+// those live is GitHub's business, so the rule is "encrypted all the way",
+// not a list of names. (The update test talks to its stand-in on this machine.)
+const allowed = (url) => (TEST_FEED ? String(url).startsWith(new URL('/', TEST_FEED).toString()) : /^https:\/\//i.test(String(url)));
+// Has the pack this runs from already shown, on an earlier start, that it works on this Mac?
+const proven = Boolean(boot.pack) && packs.readState(originalFs, boot.updates).good === pkg.version;
 let updater;
 
 function makeUpdater() {
+  // (the update test can switch the copying off, to have the player really downloaded)
+  const reuse = !(UPDATE_TEST && process.env.DL_TEST_NO_REUSE);
   return new Updater({
     fs: originalFs,
-    fetch: (url, options) => net.fetch(url, options),
+    fetch: makeFetch(net, allowed),
     dir: boot.updates || path.join(app.getPath('userData'), 'updates'),
     feed: TEST_FEED || `${RELEASES}/latest/download/update.json`,
     fileUrl: (version, name) =>
       TEST_FEED ? new URL(`v${version}/${encodeURIComponent(name)}`, TEST_FEED).toString() : `${RELEASES}/download/v${version}/${encodeURIComponent(name)}`,
-    // GitHub hands release files out from its own download servers.
-    allowed: (url) =>
-      TEST_FEED ? url.startsWith(new URL('/', TEST_FEED).toString()) : /^https:\/\/([a-z0-9-]+\.)*(github\.com|githubusercontent\.com)\//.test(url),
-    // Files that are the same in the new version are copied from here.
+    allowed,
     running: {
       version: pkg.version,
       bundledVersion: boot.bundledVersion,
       electron: process.versions.electron,
-      places: [...new Set([HOME, app.isPackaged ? process.resourcesPath : null].filter(Boolean))],
+      // Files that are the same in the new version are copied from here.
+      places: reuse ? [...new Set([HOME, app.isPackaged ? process.resourcesPath : null].filter(Boolean))] : [],
+      skipped: Array.isArray(boot.skipped) ? boot.skipped : [],
+      accepts: (info) => (typeof boot.accepts === 'function' ? boot.accepts(info) : ''),
+      fresh: Boolean(boot.pack) && !proven,
     },
     onChange: (state) => libraryWindow && !libraryWindow.isDestroyed() && libraryWindow.webContents.send('update:state', state),
     page: `${RELEASES}/latest`,
   });
 }
 
+let restarting = false;
 async function restartIntoUpdate() {
+  if (restarting) return true;
   if (nativePlayers.size || playerWindows.size) {
     const choice = await dialog.showMessageBox(libraryWindow, {
       type: 'question',
@@ -335,44 +396,137 @@ async function restartIntoUpdate() {
     });
     if (choice.response !== 0) return false;
   }
+  if (restarting) return true;
+  restarting = true;
+  say(`[update-test] installed ${updater.view().latest}, restarting`);
   app.relaunch({ args: process.argv.slice(1).filter((a) => a !== '--installed-code') });
   app.quit();
   return true;
 }
 
-// An update pack has to prove itself: its window has to come up within a
-// minute of starting. If it doesn't, or the code fails on the way there, the
-// pack is set aside and the app starts again without it (boot.failed).
-let up = false;
+// ---------- an update pack has to prove itself ----------
+// A pack that has not worked on this Mac before is watched while it starts:
+// its window has to come up within a minute, draw its page, and stay up for a
+// little while, without the code failing on the way. Then it counts as good
+// (boot.started) and the pack before it can go. One that doesn't get that
+// far is set aside, and the app starts again without it (boot.failed). A
+// pack that has worked here before only has to bring its window up.
+const SETTLE = UPDATE_TEST ? 2 : 15; // seconds the window has to stay up
+let stage = 'starting'; // -> 'settling' (a new pack on probation) -> 'up'
 const stumbled = (err) => boot.failed(`failed while starting: ${String((err && err.stack) || err).slice(0, 240)}`);
-const upTimer = boot.pack ? setTimeout(() => boot.failed('its window did not come up within a minute'), 60000) : null;
-if (boot.pack) {
-  process.on('uncaughtException', stumbled);
-  process.on('unhandledRejection', stumbled);
+let callOff = () => {};
+if (FIRST && boot.pack) {
+  callOff = after(60, () => boot.failed('its window did not come up within a minute'));
+  if (!proven) {
+    process.on('uncaughtException', stumbled);
+    process.on('unhandledRejection', stumbled);
+  }
 }
 
-function cameUp() {
-  if (up) return;
-  up = true;
-  clearTimeout(upTimer);
+// The library window has drawn its page and says so ('app:up', sent by app.js).
+function pageUp() {
+  if (stage !== 'starting') return;
+  callOff();
+  if (!boot.pack || proven) {
+    nowUp();
+    return;
+  }
+  stage = 'settling';
+  callOff = after(SETTLE, nowUp);
+}
+
+function nowUp() {
+  if (stage === 'up') return;
+  stage = 'up';
+  callOff();
   process.removeListener('uncaughtException', stumbled);
   process.removeListener('unhandledRejection', stumbled);
   boot.started();
-  updater.tidy();
-  if (UPDATE_TEST) updateTest();
+  // (A copy run from the source folder shares the installed app's data
+  // folder: it leaves that app's packs alone.)
+  const ownFolder = app.isPackaged || Boolean(process.env.DL_USER_DATA);
+  if (ownFolder) updater.tidy();
+  const settled = ownFolder && !boot.pack && process.argv.includes('--installed-code') ? offerToSwitchOff() : Promise.resolve();
+  if (UPDATE_TEST) settled.then(updateTest);
 }
 
+// Started with --installed-code: the way out when an update misbehaves. The
+// update is still on this Mac and would start again next time (the button
+// would even say "Restart to finish"), so ask whether it should stay. One
+// that is switched off is treated like one that failed: its files go, and the
+// button offers it again by name.
+const BY_HAND = 'switched off by hand';
+async function offerToSwitchOff() {
+  try {
+    const dir = updater.dir;
+    const pack = packs.choose({ fs: originalFs, dir, bundledVersion: boot.bundledVersion, electron: process.versions.electron });
+    if (!pack) return;
+    let stop = UPDATE_TEST && process.env.DL_TEST_ANSWER === 'stop'; // (the update test answers for itself)
+    if (!UPDATE_TEST) {
+      const choice = await dialog.showMessageBox(libraryWindow, {
+        type: 'question',
+        buttons: [`Stop using ${pack.version}`, `Keep ${pack.version}`],
+        defaultId: 1,
+        cancelId: 1,
+        message: 'Devious Licks is running without its update.',
+        detail:
+          `This is version ${boot.bundledVersion}, the one the app was installed with. Version ${pack.version} is also on this Mac ` +
+          'and starts again the next time the app opens. If it is the one giving you trouble, you can stop using it. ' +
+          'The Update button brings it back whenever you want.',
+      });
+      stop = choice.response === 0;
+    }
+    if (!stop) return;
+    if (!packs.markBad(originalFs, dir, pack.version, BY_HAND)) {
+      if (!UPDATE_TEST) {
+        await dialog.showMessageBox(libraryWindow, {
+          type: 'warning',
+          message: `Version ${pack.version} could not be switched off.`,
+          detail: `The app can't write to its data folder. To switch it off yourself, quit Devious Licks and delete this folder:\n\n${dir}`,
+        });
+      }
+      return;
+    }
+    say(`[update-test] switched off ${pack.version}`);
+    updater.tidy();
+    await updater.check();
+  } catch (err) {
+    console.error(`[update] could not offer to switch the update off: ${(err && err.message) || err}`);
+  }
+}
+
+// The library window's page went away by itself (it crashed, or was killed).
+function windowDied(reason) {
+  if (stage !== 'up' && reason !== 'clean-exit') boot.failed(`its window stopped while starting (${reason || 'no reason given'})`);
+}
+
+let ready = false; // the library and the handlers below are in place
+app.on('second-instance', () => {
+  say('[update-test] a second copy was opened: showing this one instead');
+  if (!ready) return;
+  if (!libraryWindow) {
+    createLibraryWindow();
+    return;
+  }
+  if (libraryWindow.isMinimized()) libraryWindow.restore();
+  libraryWindow.show();
+  libraryWindow.focus();
+});
+
 app.whenReady().then(async () => {
+  if (!FIRST) return;
   updater = makeUpdater();
+  // The About box reads the installed app's version; say which one is really running.
+  if (boot.pack) app.setAboutPanelOptions({ applicationVersion: pkg.version, version: `installed app ${boot.bundledVersion}` });
   library = new Library(path.join(app.getPath('userData'), 'library'), makeSource());
   await library.load();
   local = new LocalGames(path.join(app.getPath('userData'), 'local-games'));
   await local.load();
   registerProtocol();
 
-  ipcMain.handle('library:get', () => {
-    cameUp(); // the window is up and talking to this process
-    return view();
+  ipcMain.handle('library:get', () => view());
+  ipcMain.on('app:up', (event) => {
+    if (libraryWindow && !libraryWindow.isDestroyed() && event.sender === libraryWindow.webContents) pageUp();
   });
   ipcMain.handle('update:get', () => updater.view());
   ipcMain.handle('update:check', () => updater.check());
@@ -394,6 +548,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('library:refresh', () => refresh());
   ipcMain.handle('game:play', (_e, id, opts) => openGame(id, { reset: Boolean(opts && opts.reset), diagnose: Boolean(opts && opts.diagnose) }));
 
+  ready = true;
   createLibraryWindow();
   if (SMOKE) smokeTest();
   app.on('activate', () => {
@@ -404,7 +559,9 @@ app.whenReady().then(async () => {
 function smokeTest() {
   const finish = (ok, details) => {
     console.log(`[smoke] ${ok ? 'ok' : 'FAILED'} ${JSON.stringify({ version: pkg.version, chip: process.arch, ...details })}`);
-    fs.rmSync(app.getPath('userData'), { recursive: true, force: true });
+    // Only the throw-away folder boot.js made for this run, never one somebody named with DL_USER_DATA.
+    const data = app.getPath('userData');
+    if (path.basename(data).startsWith('devious-licks-smoke-')) fs.rmSync(data, { recursive: true, force: true });
     app.exit(ok ? 0 : 1);
   };
   const timer = setTimeout(() => finish(false, { why: 'the library window did not load within 45 seconds' }), 45000);
@@ -419,43 +576,86 @@ function smokeTest() {
         '({ bridge: typeof window.library === "object" && typeof window.library.play === "function", page: Boolean(document.getElementById("refresh")) })'
       );
       const n64Player = Boolean(nativeCoreFor({ core: 'n64' }));
+      // The release build also has the app fetch the start of a real file
+      // from GitHub, down the same road the Update button takes.
+      const probe = /^https:\/\/github\.com\//.test(process.env.DL_SMOKE_FETCH || '') ? await probeFetch(process.env.DL_SMOKE_FETCH) : null;
       // (a copy run from the source folder has no built player; the packaged app must)
-      finish(page.bridge && page.page && (n64Player || !app.isPackaged), { ...page, n64Player });
+      finish(page.bridge && page.page && (n64Player || !app.isPackaged) && (!probe || probe.ok), { ...page, n64Player, ...(probe ? { fetch: probe } : {}) });
     } catch (err) {
       finish(false, { why: String((err && err.message) || err) });
     }
   });
 }
 
-// The update test, one start at a time: say what is running; when the stand-in
-// for GitHub has something newer that hasn't failed here before, take it and
-// restart; otherwise report where things ended up and quit. The release
-// workflow reads the lines this writes (DL_TEST_LOG) and judges them.
-async function updateTest() {
-  const say = (line) => {
-    console.log(line);
+// Fetches the first bytes of `url` the way the Update button fetches its
+// files (transport.js) and says how it went: the answer, how much arrived,
+// and the hosts the request was passed on to.
+async function probeFetch(url) {
+  const hops = [];
+  const fetch = makeFetch(net, (to) => {
     try {
-      if (process.env.DL_TEST_LOG) fs.appendFileSync(process.env.DL_TEST_LOG, `${line}\n`);
+      hops.push(new URL(String(to)).host);
     } catch {
-      /* the console has it */
+      hops.push('?');
     }
-  };
+    return /^https:\/\//i.test(String(to));
+  });
+  const control = new AbortController();
+  const timer = setTimeout(() => control.abort(), 30000);
+  try {
+    const res = await fetch(url, { signal: control.signal });
+    const reader = res.body ? res.body.getReader() : null;
+    let bytes = 0;
+    while (reader && bytes < 65536) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.length;
+    }
+    control.abort(); // the rest is not needed
+    return { ok: res.status === 200 && bytes > 0, status: res.status, bytes, hops };
+  } catch (err) {
+    return { ok: false, why: String((err && err.message) || err), hops };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// The update test, one start at a time: say what is running; when there is
+// something newer that hasn't failed here before, click the Update button in
+// the window and let the page take it from there, restart included;
+// otherwise report where things ended up and quit. The release workflow
+// reads the lines this writes (DL_TEST_LOG) and judges them
+// (scripts/test-update.js).
+async function updateTest() {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const inPage = (code) => libraryWindow.webContents.executeJavaScript(code);
   const giveUp = setTimeout(() => {
-    say('[update-test] FAILED: no result after 90 seconds');
+    say('[update-test] FAILED: no result after three minutes');
     app.exit(1);
-  }, 90000);
+  }, 180000);
   try {
     say(`[update-test] running ${pkg.version} from ${boot.pack ? 'an update pack' : 'the installed code'}`);
     if (!TEST_FEED) throw new Error('DL_UPDATE_FEED has to be an http://127.0.0.1:<port>/ address');
-    const found = await updater.check();
+    // For the test of two copies at once: stay open until the file named in DL_TEST_HOLD appears.
+    if (process.env.DL_TEST_HOLD) {
+      say(`[update-test] holding ${process.pid}`);
+      while (!fs.existsSync(process.env.DL_TEST_HOLD)) await sleep(200);
+    }
+    let found = await updater.check();
     if (found.phase === 'available' && !found.failedBefore) {
-      const done = await updater.install();
-      if (done.phase !== 'ready') throw new Error(`the update did not install: ${done.error}`);
-      say(`[update-test] installed ${done.latest}, restarting`);
-      clearTimeout(giveUp);
-      app.relaunch();
-      app.exit(0);
-      return;
+      // The way a person does it: one click on the button. The page downloads
+      // the update and asks for the restart itself (restartIntoUpdate).
+      await inPage("document.getElementById('update').click()");
+      const clicked = Date.now();
+      let readyAt = 0;
+      for (;;) {
+        await sleep(200);
+        found = updater.view();
+        if (found.phase === 'error') break; // reported below
+        if (found.phase === 'ready' && !readyAt) readyAt = Date.now();
+        if (readyAt && Date.now() - readyAt > 30000) throw new Error('the update was downloaded, but the window did not restart the app');
+        if (!readyAt && Date.now() - clicked > 120000) throw new Error(`the click on Update led nowhere (the update's state is "${found.phase}")`);
+      }
     }
     // Where things ended up. The player has to run from wherever this code
     // found it: for a pack that is the copy the update brought along.
@@ -466,13 +666,20 @@ async function updateTest() {
       player = run.status === 0 ? run.stdout.trim() : `FAILED (${run.status === null ? run.signal || (run.error && run.error.code) : run.status}) ${String(run.stderr || '').trim().slice(-200)}`;
     }
     // What the window shows (it fills in the version a moment after it loads).
-    const page = await libraryWindow.webContents.executeJavaScript(`new Promise((resolve) => {
+    const page = await inPage(`new Promise((resolve) => {
       const start = Date.now();
       (function look() {
         const button = document.getElementById('update');
         const version = document.getElementById('version');
-        if ((version && version.textContent) || Date.now() - start > 10000) resolve({ button: Boolean(button), shown: version ? version.textContent : null });
-        else setTimeout(look, 50);
+        const notice = document.getElementById('notice');
+        if ((version && version.textContent) || Date.now() - start > 10000) {
+          resolve({
+            button: Boolean(button),
+            label: button ? button.textContent.trim() : null,
+            shown: version ? version.textContent : null,
+            notice: notice && !notice.hidden ? notice.textContent.trim().replace(/\\s+/g, ' ') : null,
+          });
+        } else setTimeout(look, 50);
       })();
     })`);
     say(`[update-test] done ${JSON.stringify({
@@ -483,6 +690,7 @@ async function updateTest() {
       phase: found.phase,
       latest: found.latest || null,
       failedBefore: Boolean(found.failedBefore),
+      why: found.why || null,
       error: found.error || null,
       bad: Object.keys(packs.readState(originalFs, updater.dir).bad),
       skipped: (boot.skipped || []).map((s) => s.version),
@@ -500,6 +708,8 @@ async function updateTest() {
 }
 
 app.on('before-quit', () => {
+  // Quitting while a new pack is still on probation says nothing about it either way.
+  if (stage === 'settling') boot.excused();
   for (const child of nativePlayers.values()) {
     child.quitting = true;
     child.kill('SIGTERM');

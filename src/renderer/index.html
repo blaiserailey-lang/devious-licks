@@ -35,6 +35,11 @@
   <nav class="filters" id="filters" aria-label="Filter by console"></nav>
 
   <main>
+    <div id="notice" class="notice" role="status" hidden>
+      <span id="notice-text"></span>
+      <button id="notice-page" hidden>Open the download page</button>
+      <button id="notice-close" class="close" title="Dismiss" aria-label="Dismiss this message">×</button>
+    </div>
     <div id="status" class="status" hidden></div>
     <section id="grid" class="grid" aria-live="polite"></section>
     <div id="empty" class="empty" hidden>

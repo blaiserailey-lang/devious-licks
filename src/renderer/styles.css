@@ -76,6 +76,20 @@ main { flex: 1; overflow: auto; padding: 4px 28px 28px; }
   background: var(--panel); border: 1px solid var(--line); color: var(--muted);
 }
 .status.error { border-color: #ff6b6b66; color: #ffb3b3; }
+/* What the Update button has to say. Its own place, so that a catalog refresh can't wipe it. */
+.notice {
+  margin-bottom: 14px; padding: 10px 10px 10px 14px; border-radius: 10px;
+  background: var(--panel); border: 1px solid #c6ff3d55; border-left: 4px solid var(--accent-2);
+  display: flex; align-items: center; gap: 12px;
+  -webkit-user-select: text; user-select: text;
+}
+.notice[hidden] { display: none; }
+.notice.error { border-color: #ff6b6b66; border-left-color: #ff6b6b; }
+.notice #notice-text { flex: 1; }
+.notice button { height: 30px; flex: none; white-space: nowrap; }
+.notice button[hidden] { display: none; }
+.notice .close { width: 30px; padding: 0; justify-content: center; font-size: 18px; line-height: 1; background: transparent; border-color: transparent; color: var(--muted); }
+.notice .close:hover { color: var(--text); }
 
 .grid {
   display: grid; gap: 18px;

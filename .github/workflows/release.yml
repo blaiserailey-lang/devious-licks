@@ -1,8 +1,11 @@
 # Builds the Mac app and publishes it to GitHub Releases: the DMG (the first
 # install) and the update files (what the app's Update button downloads).
-# To ship a new version: bump "version" in package.json, then either push a tag
-# (git tag v0.2.0 && git push origin v0.2.0) or create a release named v0.2.0 on
-# GitHub's Releases page. The tag has to be "v" plus that version.
+#
+# To ship a new version: bump "version" in package.json, commit, then open
+# Actions > Release Mac app > Run workflow. (Pushing a tag "v" + that version
+# does the same.) Nothing becomes public until every file has been uploaded
+# and read back; a run that fails on the way publishes nothing.
+#
 # Friends download the app once from:
 #   https://github.com/<owner>/<repo>/releases/latest
 # and from then on click Update inside the app.
@@ -11,26 +14,84 @@ name: Release Mac app
 on:
   push:
     tags: ["v*"]
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       publish:
-        description: "Publish the DMG as release v<version>. Untick for a test build: everything runs, nothing is published."
+        description: "Publish this as release v<version>. Untick for a test build: everything runs, nothing is published."
         type: boolean
         default: true
 
+# The build only reads the repository. The right to publish (which, with the
+# Update button, is the right to put code on every Mac that has the app) is
+# given to the short job at the end alone, and that job runs none of the
+# code the build downloads.
 permissions:
-  contents: write
+  contents: read
 
+# One release at a time.
 concurrency:
-  group: release-${{ github.event.release.tag_name || github.ref_name }}
+  group: release
 
 jobs:
-  mac:
+  build:
     runs-on: macos-latest
+    timeout-minutes: 120
+    outputs:
+      publish: ${{ steps.plan.outputs.publish }}
+      tag: ${{ steps.plan.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Before half an hour of building: is this a version that can go out?
+      # A release is always called "v" + the version in package.json (the
+      # Update button fetches a version's files from the release of that
+      # name), and a version that is already out is never replaced: people
+      # who have it would not get the change, and people fetching it during
+      # the swap would get a mix.
+      - name: Check the version
+        id: plan
+        env:
+          PUBLISH: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          WANT="v$(node -p 'require("./package.json").version')"
+          if [ "$PUBLISH" != "true" ]; then
+            echo "A test build of ${WANT#v}: nothing will be published."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$REF_TYPE" = "branch" ] && [ "$REF_NAME" != "$DEFAULT_BRANCH" ]; then
+            echo "::error::A release is published from the $DEFAULT_BRANCH branch only, and this run is on $REF_NAME. For a test build of this branch, run it again with \"Publish\" unticked."
+            exit 1
+          fi
+          if [ "$REF_TYPE" = "tag" ] && [ "$REF_NAME" != "$WANT" ]; then
+            echo "::error::The tag is $REF_NAME, but package.json says version ${WANT#v}. Delete that tag, set \"version\" in package.json to the version you mean, and release again (Actions > Release Mac app > Run workflow)."
+            exit 1
+          fi
+          if gh release view "$WANT" --json isDraft,assets > release.json 2>/dev/null \
+            && [ "$(jq -r .isDraft release.json)" = "false" ] \
+            && jq -e '.assets[] | select(.name == "update.json")' release.json > /dev/null; then
+            echo "::error::Version ${WANT#v} is already out, and a version that is out is never replaced. Bump \"version\" in package.json and run this again."
+            exit 1
+          fi
+          # Versions only go up: the Update button never offers an older one,
+          # and the download link always serves the release marked "latest".
+          NEWEST="$(gh release view --json tagName --jq .tagName 2>/dev/null || true)"
+          if echo "$NEWEST" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' && [ "$NEWEST" != "$WANT" ] \
+            && [ "$(printf '%s\n%s\n' "${NEWEST#v}" "${WANT#v}" | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)" != "${WANT#v}" ]; then
+            echo "::error::The newest release is ${NEWEST#v}, and ${WANT#v} would come before it. Set \"version\" in package.json to something later than ${NEWEST#v}."
+            exit 1
+          fi
+          echo "This run will publish $WANT."
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+          echo "tag=$WANT" >> "$GITHUB_OUTPUT"
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -116,6 +177,9 @@ jobs:
       # The finished, signed app: it runs on both chips, it opens, and the
       # player inside it passes the same test again.
       - name: Self-test the packaged app
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           APP="$(find dist -maxdepth 2 -name '*.app' -path '*mac-universal/*' | head -1)"
           [ -n "$APP" ] || APP="$(find dist -maxdepth 2 -name '*.app' | head -1)"
@@ -136,6 +200,19 @@ jobs:
             grep '^\[smoke\]' smoke.log || { echo "::error::The app did not start ($chip)"; tail -40 smoke.log; exit 1; }
             grep -q '^\[smoke\] ok' smoke.log || { echo "::error::The app's start-up check failed ($chip)"; tail -40 smoke.log; exit 1; }
           done
+          # The Update button's road to GitHub, for real: the app fetches the
+          # start of a file of the newest release with the code the button
+          # uses. GitHub passes such a request on twice, the second time to
+          # its download servers, and the app has to follow.
+          FILE="$(gh release view --json assets --jq '.assets[0].name | @uri' 2>/dev/null || true)"
+          if [ -n "$FILE" ]; then
+            DL_SMOKE_FETCH="https://github.com/$GITHUB_REPOSITORY/releases/latest/download/$FILE" \
+              perl -e 'alarm shift; exec @ARGV' 120 "$APP/Contents/MacOS/Devious Licks" --smoke-test >smoke.log 2>&1 || true
+            grep '^\[smoke\]' smoke.log || { echo "::error::The app did not start for the download check"; tail -40 smoke.log; exit 1; }
+            grep -q '^\[smoke\] ok .*"fetch":{"ok":true' smoke.log || { echo "::error::The app could not fetch a release file from GitHub the way the Update button does"; tail -40 smoke.log; exit 1; }
+          else
+            echo "No release to fetch from yet: the download check is skipped."
+          fi
           codesign --verify --deep --strict "$APP" || echo "::warning::codesign could not verify the packaged app"
           codesign -dv "$APP/Contents/Resources/player/dl-player" 2>&1 | sed -n '1,8p'
           PLAYER_DIR="$PWD/$APP/Contents/Resources/player" player/selftest.sh
@@ -152,63 +229,106 @@ jobs:
             echo "$f: $(lipo -archs "dist/update/$f"), signature ok"
           done
 
-      # The Update button for real: the packaged app takes test updates from a
-      # stand-in for GitHub on this machine. A good one has to end up running,
-      # with its own copy of the player; ones that fail at start, quit at start
-      # or never open a window have to be set aside, with the app back on the
-      # last version that worked (scripts/test-update.js).
+      # The Update button for real: the packaged app clicks its own Update
+      # button and takes test updates from a stand-in for GitHub on this
+      # machine. Good ones have to end up running, with the player they
+      # brought (copied, and downloaded); ones that fail at start, quit, hang
+      # or die right after opening have to be set aside, with the app back on
+      # the last version that worked and saying so (scripts/test-update.js).
       - name: Test updating the app
+        timeout-minutes: 30
         run: node scripts/test-update.js --app "$APP"
 
+      # Everything a release consists of, handed to the publishing job (and
+      # kept with the run: after a test build this is where the DMG is).
       - uses: actions/upload-artifact@v4
         with:
-          name: dmg
+          name: release
+          compression-level: 0
+          if-no-files-found: error
           path: |
             dist/*.dmg
-            dist/update/update.json
+            dist/update/
 
-      # Tag push / published release: attach to that tag. Manual "Run workflow":
-      # create (or update) the release v<version from package.json>, unless
-      # "publish" was unticked (a test build stops here, with the DMG above).
-      - name: Pick release tag
-        id: tag
-        if: github.event_name != 'workflow_dispatch' || inputs.publish
-        env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-          REF_TYPE: ${{ github.ref_type }}
-          REF_NAME: ${{ github.ref_name }}
-        run: |
-          WANT="v$(node -p 'require("./package.json").version')"
-          if [ -n "$RELEASE_TAG" ]; then NAME="$RELEASE_TAG"
-          elif [ "$REF_TYPE" = "tag" ]; then NAME="$REF_NAME"
-          else NAME="$WANT"; fi
-          # The Update button fetches a version's files from the release named
-          # "v" + that version, so the two have to agree.
-          if [ "$NAME" != "$WANT" ]; then
-            echo "::error::The release is called $NAME, but package.json says version ${WANT#v}. Bump \"version\" in package.json (or name the release $WANT) and run this again."
-            exit 1
-          fi
-          echo "name=$NAME" >> "$GITHUB_OUTPUT"
-
-      - name: Publish release
-        if: github.event_name != 'workflow_dispatch' || inputs.publish
-        uses: softprops/action-gh-release@v2
+  # Puts the release on GitHub. It starts as a draft, which nobody can see;
+  # every file is uploaded and read back; only then is it made public, as the
+  # latest release. From that moment the download link serves the new DMG and
+  # the Update button in everybody's app offers the new version.
+  publish:
+    needs: build
+    if: needs.build.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.build.outputs.tag }}
+    steps:
+      - uses: actions/download-artifact@v4
         with:
-          tag_name: ${{ steps.tag.outputs.name }}
-          target_commitish: ${{ github.sha }}
-          files: dist/*.dmg
-          generate_release_notes: true
+          name: release
+          path: out
 
-      # The update files go up after the DMG, and update.json last of all: it
-      # is what tells the apps out there that this version exists, and by then
-      # every file it lists is in place.
-      - name: Publish the update files
-        if: github.event_name != 'workflow_dispatch' || inputs.publish
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          TAG: ${{ steps.tag.outputs.name }}
+      - name: Publish the release
         run: |
-          find dist/update -type f ! -name update.json -print0 | xargs -0 gh release upload "$TAG" --clobber
-          gh release upload "$TAG" dist/update/update.json --clobber
-          gh release view "$TAG" --json assets --jq '.assets[] | "\(.name)  \(.size) bytes"'
+          set -euo pipefail
+          ls -lh out out/update
+          DMG="$(ls out/*.dmg)"
+          cat out/update/update.json
+
+          # Where does this version stand on GitHub?
+          STATE=new
+          if gh release view "$TAG" --json isDraft,assets > release.json 2>/dev/null; then
+            if [ "$(jq -r .isDraft release.json)" = "true" ]; then STATE=draft
+            elif jq -e '.assets[] | select(.name == "update.json")' release.json > /dev/null; then STATE=out
+            else STATE=bare; fi
+          fi
+          echo "Release $TAG: $STATE"
+          case "$STATE" in
+            out)
+              echo "::error::Version ${TAG#v} is already out, and a version that is out is never replaced. Bump \"version\" in package.json and run the workflow again."
+              exit 1 ;;
+            draft)
+              # left behind by a run that failed part-way: start it over
+              gh release delete "$TAG" --yes
+              gh release create "$TAG" --draft --title "$TAG" --generate-notes --target "$GITHUB_SHA" ;;
+            new)
+              gh release create "$TAG" --draft --title "$TAG" --generate-notes --target "$GITHUB_SHA" ;;
+            bare)
+              echo "Release $TAG was made by hand and is already public: its files are added to it as it is." ;;
+          esac
+
+          # The files. update.json goes up last: it is what tells the apps
+          # that this version exists, and by then everything it lists is there.
+          gh release upload "$TAG" "$DMG" --clobber
+          find out/update -type f ! -name update.json -print0 | xargs -0 gh release upload "$TAG" --clobber
+          gh release upload "$TAG" out/update/update.json --clobber
+
+          # Read everything back and compare it with what was built.
+          mkdir back
+          gh release download "$TAG" --dir back
+          cmp back/update.json out/update/update.json
+          jq -r '.files[] | "\(.sha256)  \(.name)"' out/update/update.json > sums.txt
+          (cd back && sha256sum --check ../sums.txt)
+          cmp "back/$(basename "$DMG")" "$DMG"
+
+          # Public, and the one the download link and the Update button point at.
+          if [ "$STATE" = "bare" ]; then gh release edit "$TAG" --latest
+          else gh release edit "$TAG" --draft=false --latest; fi
+          gh release view "$TAG" --json url,assets --jq '.url, (.assets[] | "  \(.name)  \(.size) bytes")'
+
+      # The same question the apps ask: what is the newest version?
+      - name: Check what the apps will see
+        run: |
+          set -euo pipefail
+          for try in 1 2 3 4 5 6; do
+            if curl -fsSL "https://github.com/$GH_REPO/releases/latest/download/update.json" -o seen.json && cmp -s seen.json out/update/update.json; then
+              echo "The Update button now offers ${TAG#v}."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::Release $TAG is up, but https://github.com/$GH_REPO/releases/latest/download/update.json does not serve it. On the Releases page, check that $TAG is marked \"Latest\" (and not \"Pre-release\"): until it is, the apps will not see this version."
+          exit 1

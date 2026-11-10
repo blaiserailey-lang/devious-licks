@@ -83,3 +83,51 @@ test('games.json without hashes does not mark games updated every refresh', asyn
   r = await lib.refresh();
   assert.deepStrictEqual(r.summary.updated, ['one']);
 });
+
+test('a catalog entry can never name a file outside the library folder', async () => {
+  const dir = makeCatalog([{ id: 'good', data: 'A' }]);
+  const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'games.json'), 'utf8'));
+  fs.writeFileSync(path.join(dir, 'roms', 'x.asar'), 'not a game');
+  const hostile = [
+    { id: '../../updates/9.9.9/app', title: 'x', core: 'nes', rom: 'roms/x.asar' },
+    { id: '..', title: 'x', core: 'nes', rom: 'roms/x.asar' },
+    { id: 'a/b', title: 'x', core: 'nes', rom: 'roms/x.asar' },
+    { id: 'Upper', title: 'x', core: 'nes', rom: 'roms/x.asar' },
+    { id: 'fine-id', title: 'x', core: 'nes', rom: '../outside.nes' },
+    { id: 'fine-id2', title: 'x', core: 'nes', rom: 'roms/../../outside.nes' },
+    { id: 'fine-id3', title: 'x', core: 'nes', rom: '/etc/hosts' },
+    { id: 7, title: 'x', core: 'nes', rom: 'roms/x.asar' },
+    { id: 'good', title: 'the same id twice', core: 'nes', rom: 'roms/x.asar' },
+    null, 'text', [],
+  ];
+  fs.writeFileSync(path.join(dir, 'games.json'), JSON.stringify({ studio: { odd: true }, games: [...manifest.games, ...hostile] }));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dl-lib-'));
+  const lib = new Library(path.join(home, 'library'), folderSource(dir));
+  await lib.load();
+  const r = await lib.refresh();
+  assert.deepStrictEqual(r.games.map((g) => g.id), ['good']);
+  assert.match(r.summary.failed.join('\n'), /12 catalog entries are not valid/);
+  assert.deepStrictEqual(fs.readdirSync(home), ['library'], 'nothing was written next to the library folder');
+  assert.deepStrictEqual(fs.readdirSync(path.join(home, 'library', 'roms')), ['good.nes']);
+  // A cover is only fetched from inside the catalog folder, too.
+  fs.writeFileSync(path.join(dir, 'games.json'), JSON.stringify({ games: [{ ...manifest.games[0], cover: '../../secret.png' }] }));
+  assert.strictEqual((await lib.refresh()).games[0].cover, null);
+});
+
+test('a saved library this version cannot read is rebuilt, and never leads outside the folder', async () => {
+  const dir = makeCatalog([{ id: 'good', data: 'A' }]);
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dl-lib-'));
+  const libDir = path.join(home, 'library');
+  fs.mkdirSync(libDir);
+  fs.writeFileSync(path.join(home, 'precious.txt'), 'keep me');
+  for (const saved of [
+    '{"version":2,"games":{"good":{}}}', '[]', '"x"', '{', '{"games":[null,7,{"id":"good"}]}',
+    JSON.stringify({ syncedAt: 5, games: [{ id: 'gone', title: 'Gone', core: 'nes', romFile: '../../precious.txt', coverFile: '../../precious.txt' }] }),
+  ]) {
+    fs.writeFileSync(path.join(libDir, 'library.json'), saved);
+    const lib = new Library(libDir, folderSource(dir));
+    assert.deepStrictEqual((await lib.load()).games, [], saved);
+    assert.deepStrictEqual((await lib.refresh()).games.map((g) => g.id), ['good'], saved);
+    assert.strictEqual(fs.readFileSync(path.join(home, 'precious.txt'), 'utf8'), 'keep me', saved);
+  }
+});

@@ -159,29 +159,54 @@ window.addEventListener('drop', (e) => {
 //   Update -> Checking… -> Update to 0.3.3 -> Updating… 40% -> (the app restarts on 0.3.3)
 // The app looks for a new version by itself when it opens, so the button
 // already reads "Update to 0.3.3" when there is one. Nothing is downloaded
-// until it is clicked.
+// until it is clicked. What the button has to say in whole sentences goes
+// into the notice above the games (not the status line: a refresh wipes that).
 let update = { phase: 'idle' };
+const told = {}; // things that are said once
+
+// A version the person switched off themselves (see offerToSwitchOff in main.js).
+const byHand = (why) => /switched off by hand/.test(why || '');
 
 function megabytes(bytes) {
   return `${Math.max(1, Math.round(bytes / 1048576))} MB`;
 }
 
+function notice(text, { error = false, page = false, detail = '' } = {}) {
+  $('notice').hidden = !text;
+  $('notice-text').textContent = text || '';
+  $('notice').classList.toggle('error', error);
+  $('notice').title = detail; // the technical reason, for whoever is asked to help
+  $('notice-page').hidden = !page;
+}
+
+async function openPage() {
+  try {
+    await window.library.update.openPage();
+  } catch {
+    notice(`The download page didn't open. You can find it at ${update.page || 'the project page on GitHub'}.`, { error: true });
+  }
+}
+
 function showUpdate(next) {
   if (next) update = next;
   const btn = $('update');
+  const again = update.phase === 'available' && update.failedBefore;
   const label = {
     checking: 'Checking…',
-    available: `Update to ${update.latest}`,
+    available: again ? `Try ${update.latest} again` : `Update to ${update.latest}`,
     downloading: `Updating… ${update.percent || 0}%`,
     ready: 'Restart to finish',
     download: `Get ${update.latest}`,
   }[update.phase] || 'Update';
   btn.querySelector('span').textContent = label;
   btn.disabled = update.phase === 'checking' || update.phase === 'downloading';
+  btn.setAttribute('aria-busy', String(btn.disabled));
   btn.classList.toggle('spinning', update.phase === 'checking');
-  btn.classList.toggle('ready', ['available', 'ready', 'download'].includes(update.phase));
+  btn.classList.toggle('ready', ['available', 'ready', 'download'].includes(update.phase) && !again);
   btn.title = {
-    available: `Version ${update.latest} is out${update.size ? ` (a download of up to ${megabytes(update.size)})` : ''}.${update.notes ? ` ${update.notes}` : ''}`,
+    available: again
+      ? `Version ${update.latest} was ${byHand(update.why) ? 'switched off on this Mac' : 'downloaded before but did not start on this Mac'}. Click to download it again and give it another go.`
+      : `Version ${update.latest} is out${update.size ? ` (a download of up to ${megabytes(update.size)})` : ''}.${update.notes ? ` ${update.notes}` : ''}`,
     ready: `Version ${update.latest} is downloaded. Restart Devious Licks to start using it.`,
     download: `Version ${update.latest} needs a fresh download of the app.`,
   }[update.phase] || 'Get the newest version of Devious Licks';
@@ -189,28 +214,57 @@ function showUpdate(next) {
     $('version').textContent = `Version ${update.version}`;
     $('version').title = update.installed && update.installed !== update.version ? `Updated in place. The installed app is ${update.installed}.` : '';
   }
+  // Said once, when the app has just come back from an update, either way.
+  if (update.fresh && !told.fresh) {
+    told.fresh = true;
+    toast(`Devious Licks is now on version ${update.version}.`);
+  }
+  if (update.passedOver && !told.passedOver && !byHand(update.passedOver.why)) {
+    told.passedOver = true;
+    const { version, why } = update.passedOver;
+    const what = /^it was set aside/.test(why)
+      ? `Version ${version} was downloaded but did not start on this Mac, so Devious Licks went back to version ${update.version}.`
+      : `Version ${version} was downloaded but can't be used on this Mac (${why}), so Devious Licks is still on version ${update.version}.`;
+    notice(`${what} You can try the update again, or get the full app from the download page.`, { error: true, page: true, detail: why });
+  }
 }
 
 async function updateClick() {
   const api = window.library.update;
-  // Look (unless the app already knows), then download.
-  if (!['available', 'ready', 'download'].includes(update.phase)) showUpdate(await api.check());
-  if (update.phase === 'available') showUpdate(await api.install());
+  // A plain "Update" looks first (unless the app already knows)...
+  if (!['available', 'ready', 'download'].includes(update.phase)) {
+    notice('');
+    showUpdate(await api.check());
+    // ...and a version that failed here before is not taken again without being asked for by name.
+    if (update.phase === 'available' && update.failedBefore) {
+      const before = byHand(update.why) ? 'it was switched off on this Mac' : 'it did not start on this Mac last time';
+      notice(`Version ${update.latest} is the newest, but ${before}. Click "Try ${update.latest} again" to give it another go, or get the full app from the download page.`, { page: true, detail: update.why || '' });
+      return;
+    }
+  }
+  if (update.phase === 'available') {
+    notice('');
+    showUpdate(await api.install());
+  }
   if (update.phase === 'ready') {
     // Starts the app again on the new version (it asks first when a game is open).
+    toast(`Version ${update.latest} is in. Restarting…`);
     if (!(await api.restart())) toast(`Version ${update.latest} is ready. Click "Restart to finish" when you are.`);
   } else if (update.phase === 'none') {
-    toast(`You have the newest version (${update.version}).`);
+    toast(update.unknown ? 'There is no update to install right now.' : `You have the newest version (${update.version}).`);
   } else if (update.phase === 'download') {
-    await api.openPage();
-    showStatus(`Version ${update.latest} can't be put in with the Update button: it needs a fresh download. The download page is open in your browser. Get the DMG there and install it the way you did the first time.`);
+    notice(`Version ${update.latest} can't be put in with the Update button: it needs a fresh download. Get the DMG from the download page, quit Devious Licks, and install it the way you did the first time.`, { page: true });
+    await openPage();
   } else if (update.phase === 'error') {
-    showStatus(`The update didn't work. ${update.error}`, true);
+    const what = update.latest ? `The update to version ${update.latest} didn't go through.` : "Couldn't look for a new version.";
+    notice(`${what} ${update.error} If it keeps happening, you can get the full app from the download page.`, { error: true, page: true });
   }
 }
 
 window.library.update.onState(showUpdate);
 $('update').onclick = updateClick;
+$('notice-page').onclick = openPage;
+$('notice-close').onclick = () => notice('');
 
 $('refresh').onclick = refresh;
 $('search').oninput = (e) => { query = e.target.value; render(); };
@@ -219,9 +273,20 @@ document.addEventListener('keydown', (e) => {
 });
 
 (async () => {
-  state = await window.library.get();
-  render();
-  refresh(); // check for new games every time the app opens
+  let drawn = false;
+  try {
+    state = await window.library.get();
+    render();
+    drawn = true;
+    refresh(); // check for new games every time the app opens
+  } catch (err) {
+    // Whatever is wrong with the library, the Update button has to stay
+    // usable: a newer version may be the cure.
+    notice("The library couldn't be opened on this Mac. Updating the app may fix it.", { error: true, page: true, detail: String((err && err.message) || err) });
+  }
   showUpdate(await window.library.update.get());
-  showUpdate(await window.library.update.check()); // ...and for a new version of the app
+  // The page is drawn and the app answers: say so. (A new version of the app
+  // only counts as working once its window got this far.)
+  if (drawn) window.library.up();
+  showUpdate(await window.library.update.check()); // ...and look for a new version of the app
 })();

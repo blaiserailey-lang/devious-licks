@@ -22,14 +22,32 @@
 // (a pack is started BY them), so they are kept small and careful: a pack is
 // used only when every check passes, and anything unexpected means "run the
 // installed code".
+//
+// What the installed copy of this file accepts is therefore what every later
+// version has to live with on that Mac, until its owner installs a fresh DMG:
+//   - versions are plain x.y.z;
+//   - a pack is described by pack.json in format 1 (checkManifest below): up
+//     to 500 plain files, each up to 2 GB, up to eight folders deep, with
+//     plain ASCII names, one of them app.asar at the top;
+//   - it must be newer than the installed app, made for the same major
+//     version of the engine (Electron), and the installed app must be at
+//     least its "needsApp";
+//   - its code is started as <pack>/app.asar/src/main.js;
+//   - state.json keeps good/starts/bad as described above; other keys in it
+//     are left alone.
+// A release that needs more than this has to raise "needsApp" (or the
+// format), which sends older installs to the download page instead.
 'use strict';
 const path = require('path');
 
 const FORMAT = 1;
-const MAX_STARTS = 3; // a pack that failed to come up this many times in a row is set aside
+const MAX_STARTS = 3; // a pack gets this many starts in a row without reporting in; at the next one it is set aside
 const VERSION = /^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})$/;
-const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
-const MAX_FILE = 400 * 1024 * 1024;
+const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/; // a file's name on the release page
+const PART = /^[A-Za-z0-9][A-Za-z0-9._ +@()=,~-]{0,99}$/; // one level of where it goes inside the pack
+const MAX_FILE = 2 * 1024 * 1024 * 1024; // the most GitHub takes for one release file
+const MAX_FILES = 500;
+const MAX_DEPTH = 8;
 
 function parseVersion(v) {
   const m = typeof v === 'string' ? VERSION.exec(v) : null;
@@ -45,13 +63,21 @@ function newer(a, b) {
   return false;
 }
 
+// Is the engine (Electron) a pack was built for close enough to the one in
+// this app? The same major version is: pack code that relies on something
+// newer within it says so with "needsApp".
+function sameEngine(a, b) {
+  const major = (v) => (typeof v === 'string' && /^\d{1,4}\./.test(v) ? Number(v.split('.')[0]) : NaN);
+  return major(a) === major(b);
+}
+
 // Where a pack's file goes inside the pack's folder: "app.asar",
-// "player/dl-player". Only plain names, at most three levels, never upward.
+// "player/dl-player". Only plain names, a few levels deep, never upward.
 function safeTarget(to) {
   if (typeof to !== 'string') return null;
   const parts = to.split('/');
-  if (!parts.length || parts.length > 3) return null;
-  for (const part of parts) if (!NAME.test(part) || part.endsWith('.')) return null;
+  if (!parts.length || parts.length > MAX_DEPTH) return null;
+  for (const part of parts) if (!PART.test(part) || /[. ]$/.test(part)) return null;
   return parts.join('/');
 }
 
@@ -71,8 +97,8 @@ function checkManifest(input) {
   out.needsApp = input.needsApp === undefined ? '0.0.0' : input.needsApp;
   if (!parseVersion(out.needsApp)) throw bad('needsApp');
   out.notes = typeof input.notes === 'string' ? input.notes.replace(/[^\x20-\x7e\n]/g, ' ').slice(0, 600).trim() : '';
-  if (!Array.isArray(input.files) || !input.files.length || input.files.length > 24) throw bad('files');
-  const seen = new Set();
+  if (!Array.isArray(input.files) || !input.files.length || input.files.length > MAX_FILES) throw bad('files');
+  const seen = new Set(['pack.json']); // the pack's own description lives there
   out.files = input.files.map((f) => {
     if (!f || typeof f !== 'object') throw bad('file entry');
     const to = safeTarget(f.to);
@@ -84,6 +110,11 @@ function checkManifest(input) {
     return { name: f.name, to, size: f.size, sha256: f.sha256, exec: f.exec === true };
   });
   if (!seen.has('app.asar')) throw bad('no app.asar');
+  // No file may sit where another one needs a folder ("a" next to "a/b").
+  for (const f of out.files) {
+    const parts = f.to.toLowerCase().split('/');
+    for (let i = 1; i < parts.length; i++) if (seen.has(parts.slice(0, i).join('/'))) throw bad('file target');
+  }
   return out;
 }
 
@@ -97,30 +128,68 @@ function readJson(fs, file) {
 }
 
 // Whole file or nothing: written beside the target, then moved over it.
+// (Each running copy of the app writes under a name of its own, so two of
+// them can't trip over each other's half-written file.)
 function writeJson(fs, file, value) {
+  const tmp = `${file}.${process.pid}.tmp`;
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    const tmp = `${file}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(value, null, 2));
     fs.renameSync(tmp, file);
     return true;
   } catch {
+    try {
+      fs.rmSync(tmp, { force: true });
+    } catch {
+      /* tidy() sweeps it up later */
+    }
     return false;
   }
 }
 
+// (Keys this version doesn't know are kept, so a later version can add its own.)
 function readState(fs, dir) {
   const s = readJson(fs, path.join(dir, 'state.json')) || {};
   const plain = (o) => (o && typeof o === 'object' && !Array.isArray(o) ? o : {});
-  return { good: parseVersion(s.good) ? s.good : null, starts: plain(s.starts), bad: plain(s.bad) };
+  return { ...s, good: parseVersion(s.good) ? s.good : null, starts: plain(s.starts), bad: plain(s.bad) };
 }
 
 function writeState(fs, dir, state) {
   return writeJson(fs, path.join(dir, 'state.json'), state);
 }
 
+// How many starts in a row a pack has had without reporting in. Whatever
+// else may have ended up in the file counts as none.
+function startsOf(state, version) {
+  const n = state.starts[version];
+  return Number.isInteger(n) && n > 0 ? n : 0;
+}
+
 function isBad(state, version) {
   return typeof version === 'string' && Object.prototype.hasOwnProperty.call(state.bad, version);
+}
+
+// Can this app run a pack with this (checked) description? Returns '' when
+// it can, otherwise why not.
+function fits(pack, { electron, bundledVersion }) {
+  if (pack.format !== FORMAT) return 'it is in a later format than this app reads';
+  if (!sameEngine(pack.electron, electron)) return `it was built for engine ${pack.electron}, this app has ${electron}`;
+  if (bundledVersion && newer(pack.needsApp, bundledVersion)) return `it needs the installed app to be ${pack.needsApp} or later`;
+  return '';
+}
+
+// The same question about an update that is still on the server: `info` is
+// its update.json. '' means: once its files are here, complete, this app's
+// start-up code will run it.
+function accepts({ info, electron, bundledVersion }) {
+  let pack;
+  try {
+    pack = checkManifest(info);
+  } catch {
+    return 'its description is damaged, or too new for this app to read';
+  }
+  if (!newer(pack.version, bundledVersion)) return 'the installed app is already at this version or later';
+  return fits(pack, { electron, bundledVersion });
 }
 
 // Is the pack for `version` complete and made for this app? Returns its
@@ -134,9 +203,9 @@ function inspect({ fs, dir, version, electron, bundledVersion }) {
   } catch {
     return 'its description is missing or damaged';
   }
-  if (pack.format !== FORMAT || pack.version !== version) return 'its description does not match';
-  if (pack.electron !== electron) return `it was built for engine ${pack.electron}, this app has ${electron}`;
-  if (bundledVersion && newer(pack.needsApp, bundledVersion)) return `it needs the installed app to be ${pack.needsApp} or later`;
+  if (pack.version !== version) return 'its description does not match';
+  const why = fits(pack, { electron, bundledVersion });
+  if (why) return why;
   for (const f of pack.files) {
     let size = -1;
     try {
@@ -152,10 +221,11 @@ function inspect({ fs, dir, version, electron, bundledVersion }) {
 
 // Which pack should start? The current one, else the last one known to work;
 // null means "the installed code". A pack must be newer than the installed
-// app, complete, made for this app's engine, not set aside as bad, and not on
-// its third failed start in a row. Every pack that was passed over is added
-// to `skipped` (when given) as { version, why }, so the code that does start
-// can tell the person.
+// app, complete, made for this app's engine and not set aside as bad. One
+// that was started three times in a row without reporting in is set aside at
+// the next start. Every pack that was passed over is added to `skipped`
+// (when given) as { version, why }, so the code that does start can tell the
+// person.
 function choose({ fs, dir, bundledVersion, electron, skipped = [] }) {
   const current = readJson(fs, path.join(dir, 'current.json'));
   const state = readState(fs, dir);
@@ -172,7 +242,7 @@ function choose({ fs, dir, bundledVersion, electron, skipped = [] }) {
       skip(`it was set aside: ${state.bad[version]}`);
       continue;
     }
-    if (Number(state.starts[version]) >= MAX_STARTS) {
+    if (startsOf(state, version) >= MAX_STARTS) {
       const why = `did not come up on ${MAX_STARTS} starts in a row`;
       markBad(fs, dir, version, why);
       skip(`it was set aside: ${why}`);
@@ -191,7 +261,17 @@ function choose({ fs, dir, bundledVersion, electron, skipped = [] }) {
 // Counted before a pack is started, cleared once its window is up.
 function noteStart(fs, dir, version) {
   const state = readState(fs, dir);
-  state.starts[version] = (Number(state.starts[version]) || 0) + 1;
+  state.starts[version] = startsOf(state, version) + 1;
+  return writeState(fs, dir, state);
+}
+
+// Takes one start back off the count: for a start that says nothing about
+// the pack (a second copy of the app that hands over to the first and quits).
+function unnoteStart(fs, dir, version) {
+  const state = readState(fs, dir);
+  const left = startsOf(state, version) - 1;
+  if (left > 0) state.starts[version] = left;
+  else delete state.starts[version];
   return writeState(fs, dir, state);
 }
 
@@ -257,6 +337,6 @@ function tidy(fs, dir, keep = []) {
 }
 
 module.exports = {
-  FORMAT, MAX_STARTS, parseVersion, newer, safeTarget, checkManifest, readJson, writeJson,
-  readState, isBad, inspect, choose, noteStart, noteGood, markBad, clearBad, forget, tidy,
+  FORMAT, MAX_STARTS, parseVersion, newer, sameEngine, safeTarget, checkManifest, readJson, writeJson,
+  readState, isBad, fits, accepts, inspect, choose, noteStart, unnoteStart, noteGood, markBad, clearBad, forget, tidy,
 };

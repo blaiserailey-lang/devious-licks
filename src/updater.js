@@ -9,41 +9,30 @@
 'use strict';
 const path = require('path');
 const crypto = require('crypto');
+const { Transform } = require('stream');
+const { pipeline, finished } = require('stream/promises');
 const packs = require('./packs');
 
 const CHUNK = 1 << 20;
-
-function hashFile(fs, file) {
-  return new Promise((resolve, reject) => {
-    const hash = crypto.createHash('sha256');
-    fs.createReadStream(file, { highWaterMark: CHUNK })
-      .on('data', (d) => hash.update(d))
-      .on('error', reject)
-      .on('end', () => resolve(hash.digest('hex')));
-  });
-}
+const STALLED = 'The connection to GitHub went quiet, so the app stopped waiting. Try again.';
+const UNREADABLE = 'The update information could not be read. Try again later.';
+const REDIRECTED = 'The download was redirected somewhere unexpected.';
+const NOT_SAVED = 'Could not save the update (is the disk full?).';
 
 // Copies a file byte by byte into a new one and returns the SHA-256 of what
 // was copied. (Not fs.copyFile: on a Mac that also carries over the marks
 // macOS keeps on a file, such as "this came from the internet", and a copy of
 // the player with that mark on it would be refused when it is started.)
-function copyHashed(fs, from, to) {
-  return new Promise((resolve, reject) => {
-    const hash = crypto.createHash('sha256');
-    const input = fs.createReadStream(from, { highWaterMark: CHUNK });
-    const output = fs.createWriteStream(to, { flush: true });
-    input.on('data', (d) => hash.update(d));
-    input.on('error', (err) => {
-      output.destroy();
-      reject(err);
-    });
-    output.on('error', (err) => {
-      input.destroy();
-      reject(err);
-    });
-    output.on('finish', () => resolve(hash.digest('hex')));
-    input.pipe(output);
+async function copyHashed(fs, from, to) {
+  const hash = crypto.createHash('sha256');
+  const tap = new Transform({
+    transform(chunk, _encoding, pass) {
+      hash.update(chunk);
+      pass(null, chunk);
+    },
   });
+  await pipeline(fs.createReadStream(from, { highWaterMark: CHUNK }), tap, fs.createWriteStream(to, { flush: true }));
+  return hash.digest('hex');
 }
 
 function fileSize(fs, file) {
@@ -57,24 +46,47 @@ function fileSize(fs, file) {
 
 class Updater {
   // fs        a file system that sees app.asar as a file (original-fs in the app)
-  // fetch     fetch(url, options)
+  // fetch     fetch(url, { signal }) answering like the standard fetch
   // dir       the updates folder
   // feed      where update.json is
   // fileUrl   (version, name) => where that file of that version is
-  // allowed   (url) => may the download come from here (after redirects)?
-  // running   { version, bundledVersion, electron, places: [folders laid out like a pack] }
+  // allowed   (url) => may the download come from here? (asked about where a
+  //           request ended up, when the fetch says; in the app the transport
+  //           asks it about every redirect on the way)
+  // running   what is running: { version, bundledVersion, electron,
+  //             places:  folders laid out like a pack, to copy unchanged files from,
+  //             skipped: packs the start-up code passed over at this start [{ version, why }],
+  //             accepts: (update.json) => '' or why the installed start-up code won't run it,
+  //             fresh:   this is the first start on this version }
   // onChange  called with view() whenever the state changes
-  constructor({ fs, fetch, dir, feed, fileUrl, allowed = () => true, running, onChange = () => {}, page = '' }) {
+  // patience  how long a server may stay silent, in ms: { answer, idle }
+  constructor({ fs, fetch, dir, feed, fileUrl, allowed = () => true, running, onChange = () => {}, page = '', patience = {} }) {
     Object.assign(this, { fs, fetch, dir, feed, fileUrl, allowed, running, onChange, page });
+    this.patience = { answer: 30000, idle: 60000, ...patience };
     this.state = { phase: 'idle' };
     this.manifest = null;
     this.busy = null; // a download in progress
     this.looking = null; // a check in progress
+    this.fetched = new Set(); // versions downloaded during this run
+    // A newer version that is on this Mac but was not started this time.
+    this.passedOver = (running.skipped || []).find((s) => s && packs.newer(s.version, running.version)) || null;
   }
 
-  // What the window shows.
+  // What the window shows:
+  //   version, installed   what is running, and the installed app underneath it
+  //   fresh                true on the first start after an update
+  //   passedOver           { version, why }: a downloaded update that was not started this time
+  //   phase                idle | checking | none | available | downloading | ready | download | error
+  //   latest, notes, size  the version on offer
+  //   failedBefore, why    'available': it was set aside on this Mac before, and why
+  //   why                  'download': why it can't be taken with the button
+  //   unknown              'none': nothing is published for the button to read
+  //   percent              'downloading'
+  //   error                'error'
   view() {
-    return { version: this.running.version, installed: this.running.bundledVersion, page: this.page, ...this.state };
+    const { version, bundledVersion, fresh } = this.running;
+    const passedOver = this.passedOver ? { version: this.passedOver.version, why: String(this.passedOver.why || '') } : null;
+    return { version, installed: bundledVersion, page: this.page, fresh: Boolean(fresh), passedOver, ...this.state };
   }
 
   set(state) {
@@ -87,10 +99,63 @@ class Updater {
     return this.view();
   }
 
-  async get(url) {
-    const res = await this.fetch(url, { cache: 'no-store', redirect: 'follow' });
-    if (res.url && !this.allowed(res.url)) throw new Error('The download was redirected somewhere unexpected.');
-    return res;
+  // One request. The server gets `patience.answer` to start answering and may
+  // then never go quiet for longer than `patience.idle`: a connection that
+  // just hangs must not leave the button stuck on "Checking…".
+  async open(url) {
+    const control = new AbortController();
+    let timer = null;
+    let gaveUp = false;
+    const arm = (ms) => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        gaveUp = true;
+        control.abort();
+      }, ms);
+    };
+    arm(this.patience.answer);
+    let res;
+    try {
+      res = await this.fetch(url, { cache: 'no-store', redirect: 'follow', signal: control.signal });
+    } catch (err) {
+      clearTimeout(timer);
+      throw gaveUp ? new Error(STALLED) : err;
+    }
+    const req = {
+      res,
+      arm: () => arm(this.patience.idle), // call before each wait for more of the body
+      stalled: () => gaveUp,
+      end: () => {
+        clearTimeout(timer);
+        control.abort(); // lets go of whatever was not read
+      },
+    };
+    if (res.url && !this.allowed(res.url)) {
+      req.end();
+      throw new Error(REDIRECTED);
+    }
+    return req;
+  }
+
+  async readText(req, limit) {
+    const chunks = [];
+    let got = 0;
+    try {
+      const reader = req.res.body ? req.res.body.getReader() : null;
+      while (reader) {
+        req.arm();
+        const { done, value } = await reader.read();
+        if (done) break;
+        got += value.length;
+        if (got > limit) throw new Error('The update information is too large.');
+        chunks.push(Buffer.from(value));
+      }
+    } catch (err) {
+      throw req.stalled() ? new Error(STALLED) : err;
+    } finally {
+      req.end();
+    }
+    return Buffer.concat(chunks).toString('utf8');
   }
 
   // Looks for a newer version. Never throws: problems end up in the state.
@@ -108,27 +173,64 @@ class Updater {
   async look() {
     this.set({ phase: 'checking' });
     try {
-      const res = await this.get(this.feed);
-      if (res.status === 404) return this.set({ phase: 'none' }); // nothing published for in-app updates yet
-      if (!res.ok) throw new Error(`GitHub answered ${res.status}.`);
-      const text = await res.text();
-      if (text.length > 100000) throw new Error('The update information is too large.');
-      const manifest = packs.checkManifest(JSON.parse(text));
-      this.manifest = manifest;
-      if (!packs.newer(manifest.version, this.running.version)) return this.set({ phase: 'none' });
-      const latest = manifest.version;
-      // Made for a different engine, or for a newer installed app than this
-      // one: it can't be taken in place, it needs the full download.
-      if (manifest.format > packs.FORMAT || manifest.electron !== this.running.electron || packs.newer(manifest.needsApp, this.running.bundledVersion)) {
-        return this.set({ phase: 'download', latest });
+      const req = await this.open(this.feed);
+      if (req.res.status === 404) {
+        // Nothing published for in-app updates (yet): not an error, but not
+        // "you have the newest version" either.
+        req.end();
+        return this.set({ phase: 'none', unknown: true });
       }
-      const waiting = this.waiting();
-      if (waiting === latest) return this.set({ phase: 'ready', latest, notes: manifest.notes });
+      if (!req.res.ok) {
+        req.end();
+        throw new Error(`The update server answered ${req.res.status} instead of the list of updates. Try again later.`);
+      }
+      const text = await this.readText(req, 100000);
+      let raw;
+      try {
+        raw = JSON.parse(text);
+      } catch {
+        throw new Error(UNREADABLE);
+      }
+      let manifest;
+      try {
+        manifest = packs.checkManifest(raw);
+      } catch (err) {
+        // Not something this version can make sense of. If it does name a
+        // newer version, the honest answer is "that one needs the full
+        // download", not an error at every look from now on.
+        if (raw && typeof raw === 'object' && packs.newer(raw.version, this.running.version)) {
+          return this.set({ phase: 'download', latest: raw.version, why: 'this version of the app cannot read its description' });
+        }
+        throw err;
+      }
+      this.manifest = manifest;
+      const latest = manifest.version;
+      if (!packs.newer(latest, this.running.version)) return this.set({ phase: 'none' });
+      const why = this.refusal(manifest);
+      if (why) return this.set({ phase: 'download', latest, why });
+      if (this.waiting() === latest) return this.set({ phase: 'ready', latest, notes: manifest.notes });
       const size = manifest.files.reduce((n, f) => n + f.size, 0);
-      const failedBefore = packs.isBad(packs.readState(this.fs, this.dir), latest);
-      return this.set({ phase: 'available', latest, notes: manifest.notes, size, failedBefore });
+      const state = packs.readState(this.fs, this.dir);
+      if (packs.isBad(state, latest)) {
+        return this.set({ phase: 'available', latest, notes: manifest.notes, size, failedBefore: true, why: String(state.bad[latest]) });
+      }
+      return this.set({ phase: 'available', latest, notes: manifest.notes, size, failedBefore: false });
     } catch (err) {
       return this.set({ phase: 'error', error: friendly(err) });
+    }
+  }
+
+  // Why an update can't be taken in place ('' when it can): made for another
+  // engine, for a newer installed app, or in a later format. It has to suit
+  // this code's rules and those of the start-up code in the installed app,
+  // which may be an older copy of them (see boot.js).
+  refusal(manifest) {
+    const own = packs.fits(manifest, this.running);
+    if (own) return own;
+    try {
+      return (this.running.accepts && this.running.accepts(manifest)) || '';
+    } catch {
+      return '';
     }
   }
 
@@ -138,6 +240,9 @@ class Updater {
     const version = current && current.version;
     if (!packs.newer(version, this.running.version)) return null;
     if (packs.isBad(packs.readState(this.fs, this.dir), version)) return null;
+    // The start-up code saw it when this run began and passed it over: as it
+    // is, another restart would not change that.
+    if (!this.fetched.has(version) && (this.running.skipped || []).some((s) => s && s.version === version)) return null;
     const pack = packs.inspect({ fs: this.fs, dir: this.dir, version, electron: this.running.electron, bundledVersion: this.running.bundledVersion });
     return typeof pack === 'string' ? null : version;
   }
@@ -159,9 +264,11 @@ class Updater {
     const { fs, dir } = this;
     const latest = manifest.version;
     const staging = path.join(dir, `staging-${latest}`);
+    const folder = path.join(dir, latest);
     const total = manifest.files.reduce((n, f) => n + f.size, 0);
     let done = 0;
     let shown = -1;
+    let moved = false;
     const progress = (bytes) => {
       done += bytes;
       const percent = Math.min(99, Math.floor((done / total) * 100));
@@ -178,20 +285,24 @@ class Updater {
         else progress(file.size);
         fs.chmodSync(target, file.exec ? 0o755 : 0o644);
       }
-      if (!packs.writeJson(fs, path.join(staging, 'pack.json'), manifest)) throw new Error('Could not save the update (is the disk full?).');
-      const folder = path.join(dir, latest);
+      if (!packs.writeJson(fs, path.join(staging, 'pack.json'), manifest)) throw new Error(NOT_SAVED);
       fs.rmSync(folder, { recursive: true, force: true });
       fs.renameSync(staging, folder);
+      moved = true;
       const pack = packs.inspect({ fs, dir, version: latest, electron: this.running.electron, bundledVersion: this.running.bundledVersion });
       if (typeof pack === 'string') throw new Error(`The update did not arrive whole: ${pack}.`);
       packs.clearBad(fs, dir, latest);
-      if (!packs.writeJson(fs, path.join(dir, 'current.json'), { version: latest })) throw new Error('Could not save the update (is the disk full?).');
+      if (!packs.writeJson(fs, path.join(dir, 'current.json'), { version: latest })) throw new Error(NOT_SAVED);
+      this.fetched.add(latest);
       return this.set({ phase: 'ready', latest, notes: manifest.notes });
     } catch (err) {
-      try {
-        fs.rmSync(staging, { recursive: true, force: true });
-      } catch {
-        /* tidied up at the next start */
+      // Nothing half-done stays behind: an error means nothing has changed.
+      for (const leftover of moved ? [staging, folder] : [staging]) {
+        try {
+          fs.rmSync(leftover, { recursive: true, force: true });
+        } catch {
+          /* tidied up at the next start */
+        }
       }
       return this.set({ phase: 'error', error: friendly(err), latest });
     }
@@ -218,15 +329,20 @@ class Updater {
   }
 
   async fetchFile(version, file, target, progress) {
-    const res = await this.get(this.fileUrl(version, file.name));
-    if (!res.ok || !res.body) throw new Error(`Could not download ${file.name} (GitHub answered ${res.status}).`);
+    const req = await this.open(this.fileUrl(version, file.name));
+    if (!req.res.ok || !req.res.body) {
+      req.end();
+      throw new Error(`Could not download ${file.name} (the server answered ${req.res.status}). Try again later.`);
+    }
     const hash = crypto.createHash('sha256');
     const out = this.fs.createWriteStream(target, { flush: true }); // on the disk before it counts
-    const failed = new Promise((_, reject) => out.on('error', reject));
+    const failed = new Promise((_, reject) => out.once('error', reject));
+    failed.catch(() => {}); // (reported through the races below)
     let got = 0;
     try {
-      const reader = res.body.getReader();
+      const reader = req.res.body.getReader();
       for (;;) {
+        req.arm();
         const { done, value } = await Promise.race([reader.read(), failed]);
         if (done) break;
         got += value.length;
@@ -235,10 +351,13 @@ class Updater {
         if (!out.write(value)) await Promise.race([new Promise((r) => out.once('drain', r)), failed]);
         progress(value.length);
       }
-      await Promise.race([new Promise((r) => out.end(r)), failed]);
+      out.end();
+      await finished(out); // written, flushed to the disk and closed
     } catch (err) {
       out.destroy();
-      throw err;
+      throw req.stalled() ? new Error(STALLED) : err;
+    } finally {
+      req.end();
     }
     if (got !== file.size || hash.digest('hex') !== file.sha256) throw new Error(`${file.name} did not arrive intact. Try again.`);
   }
@@ -248,6 +367,7 @@ class Updater {
   // last one known to work. A pack that was set aside as bad is dropped (the
   // note about it stays, so the button can say it failed here before).
   tidy() {
+    if (this.busy) return; // not under a download's feet
     const { fs, dir } = this;
     const { version, bundledVersion } = this.running;
     const state = packs.readState(fs, dir);
@@ -272,12 +392,22 @@ class Updater {
   }
 }
 
+// What the person is told when something went wrong. Trouble with the Mac's
+// own disk is looked for first (its messages can contain words like "network"
+// in a folder's name), and a file's path is never shown.
 function friendly(err) {
   const msg = String((err && err.message) || err);
-  if (/fetch failed|ENOTFOUND|ECONNREFUSED|ERR_INTERNET|ERR_NAME|ERR_CONNECTION|ERR_NETWORK|network/i.test(msg)) return "Can't reach GitHub right now. Check your internet connection and try again.";
-  if (/ENOSPC/.test(msg)) return 'There is not enough free space on this Mac for the update.';
-  if (/JSON|Unexpected token/.test(msg)) return 'The update information could not be read. Try again later.';
+  const code = (err && typeof err.code === 'string' && err.code) || (/^(E[A-Z]{2,12}):/.exec(msg) || [])[1] || '';
+  if (code === 'ENOSPC' || code === 'EDQUOT') return 'There is not enough free space on this Mac for the update.';
+  if (code === 'EACCES' || code === 'EPERM' || code === 'EROFS') return "The app can't write to its own data folder on this Mac, so it can't keep the update.";
+  if (/^(ENOENT|ENOTDIR|EISDIR|EEXIST|ENOTEMPTY|EBUSY|EIO|EMFILE|ENFILE|ENAMETOOLONG|EXDEV)$/.test(code)) {
+    return `The app could not save the update on this Mac (${code}). Try again.`;
+  }
+  if (/ERR_CERT_|ERR_SSL_|certificate/i.test(msg)) return "This network is getting in the way of the secure connection to GitHub, so nothing was downloaded. Try again on another network.";
+  if (/net::ERR_|fetch failed|ENOTFOUND|ECONNRE|ETIMEDOUT|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|EPIPE|socket hang up|Premature close/i.test(msg)) {
+    return "Can't reach GitHub right now. Check your internet connection and try again.";
+  }
   return msg;
 }
 
-module.exports = { Updater, hashFile };
+module.exports = { Updater, friendly, STALLED };

@@ -20,6 +20,31 @@ function safeExt(file, fallback) {
   return /^\.[a-z0-9]{1,8}$/.test(ext) ? ext : fallback;
 }
 
+// A game's id becomes the name of its files in the library folder, so it has
+// to be a plain name (the same rule scripts/update-catalog.js checks).
+const ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
+// The name of a cached file, as this code makes them up: <id>.<ext>
+const CACHED = /^[a-z0-9][a-z0-9-]{0,63}\.[a-z0-9]{1,8}$/;
+// Where a file sits inside the catalog folder: "roms/game.nes". Never upward.
+function catalogPath(file) {
+  if (typeof file !== 'string' || !file || file.length > 300 || file.includes('\\')) return false;
+  return file.split('/').every((part) => part && part !== '.' && part !== '..');
+}
+
+// One entry of games.json, as far as the app relies on it.
+function validEntry(g) {
+  return Boolean(g) && typeof g === 'object' && typeof g.id === 'string' && ID.test(g.id) && catalogPath(g.rom) && typeof g.core === 'string' && Boolean(g.core);
+}
+
+// One game as kept in library.json.
+function validCached(g) {
+  return (
+    Boolean(g) && typeof g === 'object' && typeof g.id === 'string' && ID.test(g.id) &&
+    typeof g.romFile === 'string' && CACHED.test(g.romFile) &&
+    (g.coverFile === undefined || g.coverFile === null || (typeof g.coverFile === 'string' && CACHED.test(g.coverFile)))
+  );
+}
+
 // A source knows how to fetch catalog files, either from GitHub or (for
 // local testing) from a folder on disk.
 function githubSource({ owner, repo, branch = 'main', path: dir = 'catalog', token }) {
@@ -74,7 +99,12 @@ class Library {
     await fsp.mkdir(path.join(this.dir, 'roms'), { recursive: true });
     await fsp.mkdir(path.join(this.dir, 'covers'), { recursive: true });
     try {
-      this.state = JSON.parse(await fsp.readFile(this.stateFile, 'utf8'));
+      // Only what this version can make sense of: the file is a cache, and
+      // the next refresh rebuilds whatever is left out here.
+      const saved = JSON.parse(await fsp.readFile(this.stateFile, 'utf8'));
+      if (saved && typeof saved === 'object' && Array.isArray(saved.games)) {
+        this.state = { ...saved, games: saved.games.filter(validCached), syncedAt: typeof saved.syncedAt === 'string' ? saved.syncedAt : null };
+      }
     } catch {
       /* first run */
     }
@@ -123,11 +153,14 @@ class Library {
     onProgress({ phase: 'start', message: 'Checking for new games…' });
     const ref = await this.source.resolve();
     const manifest = JSON.parse((await this.source.get('games.json')).toString('utf8'));
-    const incoming = (manifest.games || []).filter((g) => g && g.id && g.rom && g.core);
+    const listed = manifest && Array.isArray(manifest.games) ? manifest.games : [];
+    const ids = new Set();
+    const incoming = listed.filter((g) => validEntry(g) && !ids.has(g.id) && ids.add(g.id));
     const previous = new Map(this.state.games.map((g) => [g.id, g]));
     const next = [];
     const firstSync = !this.state.syncedAt;
     const summary = { added: [], updated: [], removed: [], failed: [] };
+    if (incoming.length < listed.length) summary.failed.push(`${listed.length - incoming.length} catalog ${listed.length - incoming.length === 1 ? 'entry is' : 'entries are'} not valid and ${listed.length - incoming.length === 1 ? 'was' : 'were'} left out`);
 
     let done = 0;
     for (const entry of incoming) {
@@ -167,7 +200,7 @@ class Library {
           game.changedAt = old.changedAt;
         }
 
-        if (entry.cover) {
+        if (catalogPath(entry.cover)) {
           const coverFile = `${entry.id}${safeExt(entry.cover, '.png')}`;
           const coverTarget = path.join(this.dir, 'covers', coverFile);
           const haveCover = old && old.coverFile === coverFile && entry.coverSha256 && old.coverSha256 === entry.coverSha256 && fs.existsSync(coverTarget);
@@ -200,7 +233,7 @@ class Library {
       if (old.coverFile) await fsp.rm(path.join(this.dir, 'covers', old.coverFile), { force: true });
     }
 
-    this.state = { studio: manifest.studio, games: next, ref, syncedAt: new Date().toISOString() };
+    this.state = { studio: typeof manifest.studio === 'string' ? manifest.studio : undefined, games: next, ref, syncedAt: new Date().toISOString() };
     await this.writeAtomic(this.stateFile, Buffer.from(JSON.stringify(this.state, null, 2)));
     onProgress({ phase: 'done', message: 'Up to date', done, total: incoming.length });
     return { ...this.view(), summary };

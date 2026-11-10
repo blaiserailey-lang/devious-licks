@@ -18,6 +18,7 @@
 //   --fault throws      ...and failing as soon as it starts
 //   --fault quits       ...and quitting without a word as soon as it starts
 //   --fault hangs       ...and starting, but never opening a window
+//   --fault dies        ...and opening its window, then dying half a second later
 'use strict';
 const fs = require('fs');
 const os = require('os');
@@ -27,10 +28,24 @@ const asar = require('@electron/asar');
 const packs = require('../src/packs');
 
 const ROOT = path.join(__dirname, '..');
+// What the test's broken updates do. `replace` stands in for the app's
+// main.js; `prepend` goes in front of the real one. (The ones that go away
+// by themselves leave a line in the test's log first, so the test knows
+// when, and which process.)
+const NOTE = (what) => "try { require('fs').appendFileSync(process.env.DL_TEST_LOG, `[update-test] " + what + " ${process.pid}\\n`); } catch { /* no log */ }\n";
 const FAULTS = {
-  throws: "throw new Error('this test update is broken on purpose');\n",
-  quits: "require('electron').app.exit(0); // a test update that never comes up\n",
-  hangs: "setInterval(() => {}, 1000); // a test update that starts and then does nothing\n",
+  throws: { replace: "throw new Error('this test update is broken on purpose');\n" },
+  quits: { replace: `// a test update that never comes up\n${NOTE('quitting')}require('electron').app.exit(0);\n` },
+  hangs: { replace: 'setInterval(() => {}, 1000); // a test update that starts and then does nothing\n' },
+  stumbles: { prepend: "setTimeout(() => { throw new Error('this test update trips over its own feet'); }, 300); // a test update that fails a moment after it starts\n" },
+  dies: {
+    prepend:
+      '// a test update that opens its window and then dies\n' +
+      "require('electron').app.on('browser-window-created', (_e, win) => win.webContents.once('did-finish-load', () => setTimeout(() => {\n" +
+      `  ${NOTE('dying')}` +
+      "  process.kill(process.pid, 'SIGKILL');\n" +
+      '}, 500)));\n',
+  },
 };
 
 function parseArgs(argv) {
@@ -75,6 +90,21 @@ function engineOf(app) {
   const m = /<key>CFBundleVersion<\/key>\s*<string>([^<]+)<\/string>/.exec(fs.readFileSync(plist, 'utf8'));
   if (!m) throw new Error(`Could not read the engine's version from ${plist}`);
   return m[1];
+}
+
+// The start-up rules of every version that has gone out (test/fixtures).
+function shipped() {
+  const dir = path.join(ROOT, 'test', 'fixtures');
+  let names = [];
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    /* (a copy of the scripts without the tests) */
+  }
+  return names
+    .map((name) => /^packs-(\d+\.\d+\.\d+)\.js$/.exec(name))
+    .filter(Boolean)
+    .map((m) => ({ version: m[1], rules: require(path.join(dir, m[0])) }));
 }
 
 async function make(opts) {
@@ -122,7 +152,11 @@ async function make(opts) {
       const pkg = JSON.parse(fs.readFileSync(pkgFile, 'utf8'));
       if (opts.version) pkg.version = opts.version;
       fs.writeFileSync(pkgFile, JSON.stringify(pkg, null, 2));
-      if (opts.fault) fs.writeFileSync(path.join(tree, 'src', 'main.js'), FAULTS[opts.fault]);
+      if (opts.fault) {
+        const main = path.join(tree, 'src', 'main.js');
+        const fault = FAULTS[opts.fault];
+        fs.writeFileSync(main, fault.replace || fault.prepend + fs.readFileSync(main, 'utf8'));
+      }
       archive = path.join(work, 'app.asar');
       await asar.createPackage(tree, archive);
     }
@@ -131,6 +165,11 @@ async function make(opts) {
     for (const needed of ['src/main.js', 'src/packs.js', 'src/renderer/index.html']) asar.statFile(archive, needed); // throws when missing
     const settings = (pkg.deviousLicks && pkg.deviousLicks.update) || {};
 
+    // The output folder is cleared first, so it must be one of ours: new,
+    // empty, or holding an earlier update. Anything else is left alone.
+    if (fs.existsSync(out) && fs.readdirSync(out).length && !fs.existsSync(path.join(out, 'update.json'))) {
+      throw new Error(`${out} has other things in it. Give --out a new or empty folder (it is cleared before the update files are written).`);
+    }
     fs.rmSync(out, { recursive: true, force: true });
     fs.mkdirSync(out, { recursive: true });
     const files = [];
@@ -150,6 +189,20 @@ async function make(opts) {
       notes: settings.notes || '',
       files,
     });
+    // Would the start-up code that is already on people's Macs start this?
+    // (It can't be replaced by an update; see test/frozen.test.js.) An
+    // install that "needsApp" sends to the download page anyway is not asked.
+    for (const { version, rules } of shipped()) {
+      if (!packs.newer(manifest.version, version) || packs.newer(manifest.needsApp, version)) continue;
+      const why = rules.accepts({ info: manifest, electron: manifest.electron, bundledVersion: version });
+      if (why) {
+        throw new Error(
+          `An installed app of version ${version} would not start this update (${why}). Either change the update so that it does, ` +
+            'or raise deviousLicks.update.needsApp in package.json to the first version whose installed app can take it ' +
+            '(everyone below that is sent to the download page for a fresh DMG).'
+        );
+      }
+    }
     fs.writeFileSync(path.join(out, 'update.json'), `${JSON.stringify(manifest, null, 2)}\n`);
     return { out, manifest };
   } finally {
