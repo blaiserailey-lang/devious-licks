@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, protocol, net, shell, dialog, clipboard } = require('electron');
+const { app, BrowserWindow, ipcMain, protocol, net, shell, dialog, clipboard, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const originalFs = require('original-fs'); // sees app.asar as a file (Electron's own fs treats it as a folder)
@@ -617,7 +617,16 @@ app.whenReady().then(async () => {
       if (pick.canceled || !pick.filePaths.length) return view();
       src = pick.filePaths[0];
     }
-    const result = await local.setCover(id, src);
+    // (A PNG or JPEG that is cut short or damaged is turned away here; the other kinds are taken on their first bytes.)
+    const decodes = (buf, kind) => {
+      if (kind !== 'png' && kind !== 'jpg') return true;
+      try {
+        return !nativeImage.createFromBuffer(buf).isEmpty();
+      } catch {
+        return false;
+      }
+    };
+    const result = await local.setCover(id, src, decodes);
     return { ...view(), message: result.message };
   });
   ipcMain.handle('local:remove', async (_e, id) => {

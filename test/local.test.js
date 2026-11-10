@@ -176,3 +176,62 @@ test('a picture dropped where a game file is expected says what to do with it', 
   assert.deepStrictEqual(r.added, []);
   assert.match(r.skipped[0], /Box\.png: to give a game a picture, drop the picture onto a game you added/);
 });
+
+test('GIF and WebP pictures are taken too; a picture that cannot be shown never replaces one that can', async () => {
+  const { src, lib, id } = await withOneGame();
+  for (const [file, bytes, ext] of [
+    ['a.gif', Buffer.from('GIF89a and the rest'), 'gif'],
+    ['b.gif', Buffer.from('GIF87a and the rest'), 'gif'],
+    ['c.webp', Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(4), Buffer.from('WEBPVP8 ')]), 'webp'],
+  ]) {
+    fs.writeFileSync(path.join(src, file), bytes);
+    assert.strictEqual((await lib.setCover(id, path.join(src, file))).ok, true, file);
+    assert.ok(lib.games[0].coverFile.endsWith(`.${ext}`), file);
+  }
+  const kept = lib.games[0].coverFile;
+  fs.writeFileSync(path.join(src, 'cut.png'), PNG);
+  const r = await lib.setCover(id, path.join(src, 'cut.png'), (buf, kind) => !(kind === 'png' && buf.equals(PNG)));
+  assert.deepStrictEqual([r.ok, r.message], [false, "cut.png is damaged and can't be shown"]);
+  assert.strictEqual(lib.games[0].coverFile, kept);
+  assert.deepStrictEqual(fs.readdirSync(lib.dir).filter((f) => f.includes('.cover-')), [kept]);
+});
+
+test('when the list cannot be written, the game keeps the picture it had', async () => {
+  const { src, lib, id } = await withOneGame();
+  fs.writeFileSync(path.join(src, 'one.png'), PNG);
+  fs.writeFileSync(path.join(src, 'two.jpg'), JPG);
+  await lib.setCover(id, path.join(src, 'one.png'));
+  const kept = lib.games[0].coverFile;
+  fs.mkdirSync(path.join(lib.dir, 'local.json.tmp')); // nothing can be written over a folder
+  const r = await lib.setCover(id, path.join(src, 'two.jpg'));
+  assert.strictEqual(r.ok, false);
+  assert.match(r.message, /could not be saved/);
+  assert.strictEqual(lib.games[0].coverFile, kept);
+  assert.deepStrictEqual(fs.readdirSync(lib.dir).filter((f) => f.includes('.cover-')), [kept]);
+});
+
+test('a game removed while its picture is being read gets none, and pictures no game names are cleared at the next start', async () => {
+  const { src, lib, id } = await withOneGame();
+  fs.writeFileSync(path.join(src, 'one.png'), PNG);
+  const r = await lib.setCover(id, path.join(src, 'one.png'), () => {
+    lib.games = []; // the game goes while the picture is looked at
+    return true;
+  });
+  assert.deepStrictEqual([r.ok, r.message], [false, 'That game is no longer in the library']);
+  assert.deepStrictEqual(fs.readdirSync(lib.dir).filter((f) => f.includes('.cover-')), []);
+
+  // Left behind by a version without pictures: swept. What an entry names, or is no picture of ours: kept.
+  const two = await withOneGame();
+  await two.lib.setCover(two.id, path.join(src, 'one.png'));
+  const kept = two.lib.games[0].coverFile;
+  for (const name of ['local-000000000000.cover-0123abcd.png', 'local-000000000000.cover-0123abcd.jpg.tmp', 'notes.cover-xyz.png', 'holiday.png']) fs.writeFileSync(path.join(two.lib.dir, name), 'x');
+  const again = new LocalGames(two.lib.dir);
+  await again.load();
+  assert.deepStrictEqual(fs.readdirSync(again.dir).filter((f) => f.endsWith('.png') || f.endsWith('.tmp')).sort(), [kept, 'holiday.png', 'notes.cover-xyz.png'].sort());
+  // A list this version can't read: nothing is touched.
+  fs.writeFileSync(path.join(again.dir, 'local.json'), 'not json');
+  fs.writeFileSync(path.join(again.dir, 'local-000000000000.cover-0123abcd.png'), 'x');
+  await new LocalGames(again.dir).load();
+  assert.ok(fs.existsSync(path.join(again.dir, 'local-000000000000.cover-0123abcd.png')));
+  assert.ok(fs.existsSync(path.join(again.dir, kept)));
+});

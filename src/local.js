@@ -27,6 +27,7 @@ const PICTURE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp'];
 const LOOKS_LIKE_A_PICTURE = /\.(png|jpe?g|gif|webp|heic|heif|tiff?|bmp|svg)$/i;
 const MAX_PICTURE = 25 * 1024 * 1024;
 // The picture's file name in local.json: a plain name in the games' folder, of a kind the window can show.
+const LEFT_PICTURE = /\.cover-[0-9a-f]{8}\.(png|jpg|gif|webp)(\.tmp)?$/;
 const COVER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.(png|jpg|gif|webp)$/;
 
 function titleFromFile(file) {
@@ -83,6 +84,24 @@ class LocalGames {
       this.others = list.filter((g) => !valid(g));
     } catch {
       this.unreadable = true;
+      return;
+    }
+    await this.sweepPictures();
+  }
+
+  // Pictures no game in the list names any more are deleted (a version
+  // without pictures removed the game, or a copy was cut short). Only files
+  // with a picture's own kind of name; whatever an entry names is kept, also
+  // an entry this version can't use.
+  async sweepPictures() {
+    try {
+      const named = new Set([...this.games, ...this.others].map((g) => g && g.coverFile).filter((n) => typeof n === 'string'));
+      for (const name of await fsp.readdir(this.dir)) {
+        if (!LEFT_PICTURE.test(name) || named.has(name) || named.has(name.replace(/\.tmp$/, ''))) continue;
+        await fsp.rm(path.join(this.dir, name), { force: true }).catch(() => {});
+      }
+    } catch {
+      // not worth failing over
     }
   }
 
@@ -112,7 +131,9 @@ class LocalGames {
   }
 
   // Gives a game the picture in the file `src`. Answers { ok, message }.
-  async setCover(id, src) {
+  // `decodes(buf, kind)` (optional) says whether the picture can really be
+  // shown; one that can't never takes the place of one that can.
+  async setCover(id, src, decodes) {
     const game = this.find(id);
     if (!game) return { ok: false, message: 'That game is no longer in the library' };
     const name = path.basename(String(src));
@@ -134,6 +155,9 @@ class LocalGames {
           : `${name} is not a picture this app can show (PNG, JPEG, GIF or WebP)`,
       };
     }
+    if (decodes && !decodes(buf, kind[0])) return { ok: false, message: `${name} is damaged and can't be shown` };
+    const gone = { ok: false, message: 'That game is no longer in the library' };
+    if (this.find(id) !== game) return gone; // removed while the picture was being read
     // Named after the game's own file and the picture's fingerprint: a new picture is a new name.
     const stem = path.basename(game.romFile, path.extname(game.romFile)).slice(0, 80);
     const file = `${stem}.cover-${crypto.createHash('sha256').update(buf).digest('hex').slice(0, 8)}.${kind[0]}`;
@@ -146,8 +170,20 @@ class LocalGames {
       await fsp.rm(path.join(this.dir, `${file}.tmp`), { force: true }).catch(() => {});
       return { ok: false, message: `The picture could not be saved (${(err && err.code) || 'error'})` };
     }
+    if (this.find(id) !== game) {
+      if (!this.games.some((g) => this.coverOf(g) === file)) await fsp.rm(path.join(this.dir, file), { force: true }).catch(() => {});
+      return gone;
+    }
     game.coverFile = file;
-    await this.save();
+    try {
+      await this.save();
+    } catch (err) {
+      // The list could not be written: the game keeps the picture it had.
+      if (before) game.coverFile = before;
+      else delete game.coverFile;
+      if (file !== before) await fsp.rm(path.join(this.dir, file), { force: true }).catch(() => {});
+      return { ok: false, message: `The picture could not be saved (${(err && err.code) || 'error'})` };
+    }
     if (before && before !== file) await fsp.rm(path.join(this.dir, before), { force: true }).catch(() => {});
     return { ok: true, message: `${game.title} has its picture` };
   }

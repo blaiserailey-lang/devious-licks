@@ -38,13 +38,16 @@ function renderFilters() {
 function art(game) {
   const img = el('img', { className: 'cover', src: game.cover, alt: '', loading: 'lazy' });
   const frame = el('div', { className: 'art' }, [img]);
-  img.addEventListener('load', () => {
+  const shape = () => {
     if (img.naturalWidth > 480) frame.classList.add('smooth'); // a photo or a painting, not pixel art
-    if (img.naturalHeight > img.naturalWidth * 0.85) {
+    if (img.naturalHeight > img.naturalWidth * 0.85 && !frame.classList.contains('whole')) {
       frame.classList.add('whole');
       frame.prepend(el('img', { className: 'backdrop', src: game.cover, alt: '' }));
     }
-  });
+  };
+  // (A picture the window has already loaded is shaped at once: drawing the library again must not flash it cropped.)
+  if (img.complete && img.naturalWidth) shape();
+  else img.addEventListener('load', shape);
   img.addEventListener('error', () => frame.replaceWith(el('div', { className: 'cover placeholder', textContent: game.title.slice(0, 1) })));
   return frame;
 }
@@ -87,13 +90,18 @@ function card(game) {
       .catch((err) => toast(`${game.title} couldn't be started: ${(err && err.message) || err}`));
   if (game.local) {
     node.dataset.local = game.id;
-    const picture = el('span', { className: 'picture', title: game.cover ? 'Change the picture (or drop one here)' : 'Choose a picture (or drop one here)' });
+    const picture = el('span', { className: 'picture', title: game.cover ? 'Change the picture (press P, or drop one here)' : 'Choose a picture (press P, or drop one here)' });
     picture.innerHTML = PICTURE_ICON;
     picture.onclick = (e) => {
       e.stopPropagation();
       setCover(game.id);
     };
     node.append(picture);
+    node.addEventListener('keydown', (e) => {
+      if (e.key.toLowerCase() !== 'p' || e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
+      e.preventDefault();
+      setCover(game.id);
+    });
     const remove = el('span', { className: 'remove', title: 'Remove from library', textContent: '×' });
     remove.onclick = async (e) => {
       e.stopPropagation();
@@ -206,7 +214,8 @@ window.addEventListener('dragenter', (e) => {
   if (draggingPictures(e)) document.body.classList.add('picture-drag');
   else $('dropzone').hidden = false;
 });
-window.addEventListener('dragleave', () => { if (--dragDepth <= 0) dragOver(); });
+// (No relatedTarget: the drag left the window. The count alone can be off when the library is redrawn under a drag.)
+window.addEventListener('dragleave', (e) => { if (!e.relatedTarget || --dragDepth <= 0) dragOver(); });
 window.addEventListener('dragover', (e) => {
   e.preventDefault();
   if (!document.body.classList.contains('picture-drag')) return;
