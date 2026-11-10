@@ -267,7 +267,9 @@ function openNative(game, romPath, native, options, diagnose) {
       // writes the game's save before it leaves.)
       running.restarting = true;
       running.quitting = true;
-      running.once('exit', () => openNative(game, romPath, native, options, true));
+      running.once('exit', () => {
+        if (!running.leaving) openNative(game, romPath, native, options, true); // (not when the app itself is quitting)
+      });
       running.kill('SIGTERM');
     } else {
       running.kill('SIGURG'); // already open: ask it to come to the front (harmless if it isn't listening yet)
@@ -336,7 +338,17 @@ function openNative(game, romPath, native, options, diagnose) {
     'Open System Settings, go to Privacy & Security and scroll down: if it lists "dl-player" or ' +
     '"mupen64plus_next_libretro.dylib" (or anything else from Devious Licks) as blocked, click Open Anyway there, then click the game again.';
   const blocked = `macOS stopped the built-in player before it could start. ${openAnyway}`;
-  const printed = () => /^\[player\]/m.test(tail(logFile, 200)); // the player got as far as saying something
+  // Did the player get as far as saying something? (Anywhere in the log: the
+  // recorder can put hundreds of lines after it. Without a log there is no telling,
+  // and then the hint that sends people to Privacy & Security is not given.)
+  const noLog = log === 'ignore';
+  const printed = () => {
+    try {
+      return noLog || /^\[player\]/m.test(fs.readFileSync(logFile, 'utf8'));
+    } catch {
+      return true;
+    }
+  };
 
   try {
     child = spawn(native.bin, args, { stdio: ['ignore', log, log] });
@@ -780,6 +792,7 @@ app.on('before-quit', () => {
   if (stage === 'settling') boot.excused();
   for (const child of nativePlayers.values()) {
     child.quitting = true;
+    child.leaving = true; // a Shift-click restart that was waiting for this player is off
     child.kill('SIGTERM');
   }
 });

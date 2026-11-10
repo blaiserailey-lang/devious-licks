@@ -258,21 +258,24 @@ jobs:
         run: |
           set -euo pipefail
           NEW="$(node -p 'require("./package.json").version')"
-          OLD="$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name 2>/dev/null || true)"
-          if ! echo "$OLD" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || [ "$OLD" = "v$NEW" ]; then
-            echo "No earlier release to update from (${OLD:-none}): nothing to test."
+          # The newest release that is out, other than this version itself (one
+          # made by hand for this version is not an earlier one). If GitHub
+          # can't be asked, the step fails rather than skips.
+          OLD="$(gh api "repos/$GH_REPO/releases?per_page=100" | jq -r --arg new "v$NEW" '[.[] | select((.draft or .prerelease) | not) | .tag_name | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")) | select(. != $new)] | sort_by(ltrimstr("v") | split(".") | map(tonumber)) | last // empty')"
+          if [ -z "$OLD" ]; then
+            echo "::notice::No earlier release to update from: the update from a released app was not tested."
             exit 0
           fi
           # (The Update button exists from 0.3.2 on.)
           if [ "$(printf '0.3.2\n%s\n' "${OLD#v}" | sort -t. -k1,1n -k2,2n -k3,3n | head -1)" != "0.3.2" ]; then
-            echo "Release ${OLD#v} has no Update button: nothing to test."
+            echo "::notice::Release ${OLD#v} has no Update button: the update from a released app was not tested."
             exit 0
           fi
           mkdir -p released/mnt
           gh release download "$OLD" --pattern '*.dmg' --dir released
           hdiutil attach -nobrowse -readonly -mountpoint released/mnt released/*.dmg
           cp -R "released/mnt/Devious Licks.app" released/
-          hdiutil detach released/mnt
+          hdiutil detach released/mnt || { sleep 3; hdiutil detach -force released/mnt || echo "::warning::The released disk image could not be unmounted (the test does not need it to be)."; }
           node scripts/test-real-update.js --app "released/Devious Licks.app" --pack dist/update
 
       # Everything a release consists of, handed to the publishing job (and

@@ -137,8 +137,8 @@ for a in "$NATIVE" x86_64; do
       --option mupen64plus-CountPerOp=1 --frames $N64_FRAMES $want $notes
     code=$?
     check "$code"
-    if grep -q "faulted while shutting down" "$TMP/run.log"; then
-      echo "::notice::The N64 core faulted while shutting down ($a). The player ignores that; saves are written first."
+    if grep -q "shutting down faulted or took too long" "$TMP/run.log"; then
+      echo "::notice::The N64 core faulted or hung while shutting down ($a). The player ignores that; saves are written first."
     fi
     # the first run that fails is looked at more closely below
     if [ "$code" != 0 ] && [ -z "${diagnose:-}" ]; then

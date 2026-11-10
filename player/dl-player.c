@@ -1160,6 +1160,9 @@ static void audio_sample(int16_t l, int16_t r) {
 
 /* ---------- input ---------- */
 static const Uint8 *keys;
+static SDL_Scancode shortcut_key; /* the letter of a Cmd shortcut, for as long as it stays down: not a game button */
+static bool key_down(SDL_Scancode sc) { return keys[sc] && sc != shortcut_key; }
+static bool pads_muted;           /* the game window had the keyboard and lost it: controllers are for the app in front */
 
 /* While Cmd is down a shortcut is being typed: its letter is not a game button. */
 static bool typing_shortcut(void) { return (SDL_GetModState() & KMOD_GUI) != 0; }
@@ -1167,26 +1170,26 @@ static bool typing_shortcut(void) { return (SDL_GetModState() & KMOD_GUI) != 0; 
 static int16_t key_button(unsigned id) {
   if (typing_shortcut()) return 0;
   switch (id) {
-    case RETRO_DEVICE_ID_JOYPAD_B: return keys[SDL_SCANCODE_X];      /* N64 A */
-    case RETRO_DEVICE_ID_JOYPAD_Y: return keys[SDL_SCANCODE_C];      /* N64 B */
-    case RETRO_DEVICE_ID_JOYPAD_L2: return keys[SDL_SCANCODE_Z];     /* N64 Z */
-    case RETRO_DEVICE_ID_JOYPAD_L: return keys[SDL_SCANCODE_Q];
-    case RETRO_DEVICE_ID_JOYPAD_R: return keys[SDL_SCANCODE_E];
-    case RETRO_DEVICE_ID_JOYPAD_START: return keys[SDL_SCANCODE_RETURN];
-    case RETRO_DEVICE_ID_JOYPAD_SELECT: return keys[SDL_SCANCODE_RSHIFT];
-    case RETRO_DEVICE_ID_JOYPAD_A: return keys[SDL_SCANCODE_V];
-    case RETRO_DEVICE_ID_JOYPAD_X: return keys[SDL_SCANCODE_B];
-    case RETRO_DEVICE_ID_JOYPAD_UP: return keys[SDL_SCANCODE_W];
-    case RETRO_DEVICE_ID_JOYPAD_DOWN: return keys[SDL_SCANCODE_S];
-    case RETRO_DEVICE_ID_JOYPAD_LEFT: return keys[SDL_SCANCODE_A];
-    case RETRO_DEVICE_ID_JOYPAD_RIGHT: return keys[SDL_SCANCODE_D];
+    case RETRO_DEVICE_ID_JOYPAD_B: return key_down(SDL_SCANCODE_X);      /* N64 A */
+    case RETRO_DEVICE_ID_JOYPAD_Y: return key_down(SDL_SCANCODE_C);      /* N64 B */
+    case RETRO_DEVICE_ID_JOYPAD_L2: return key_down(SDL_SCANCODE_Z);     /* N64 Z */
+    case RETRO_DEVICE_ID_JOYPAD_L: return key_down(SDL_SCANCODE_Q);
+    case RETRO_DEVICE_ID_JOYPAD_R: return key_down(SDL_SCANCODE_E);
+    case RETRO_DEVICE_ID_JOYPAD_START: return key_down(SDL_SCANCODE_RETURN);
+    case RETRO_DEVICE_ID_JOYPAD_SELECT: return key_down(SDL_SCANCODE_RSHIFT);
+    case RETRO_DEVICE_ID_JOYPAD_A: return key_down(SDL_SCANCODE_V);
+    case RETRO_DEVICE_ID_JOYPAD_X: return key_down(SDL_SCANCODE_B);
+    case RETRO_DEVICE_ID_JOYPAD_UP: return key_down(SDL_SCANCODE_W);
+    case RETRO_DEVICE_ID_JOYPAD_DOWN: return key_down(SDL_SCANCODE_S);
+    case RETRO_DEVICE_ID_JOYPAD_LEFT: return key_down(SDL_SCANCODE_A);
+    case RETRO_DEVICE_ID_JOYPAD_RIGHT: return key_down(SDL_SCANCODE_D);
     default: return 0;
   }
 }
 
 static int16_t pad_button(unsigned port, unsigned id) {
   SDL_GameController *pad = pads[port];
-  if (!pad) return 0;
+  if (!pad || pads_muted) return 0;
   SDL_GameControllerButton b;
   switch (id) {
     case RETRO_DEVICE_ID_JOYPAD_B: b = SDL_CONTROLLER_BUTTON_A; break;
@@ -1210,7 +1213,7 @@ static int16_t pad_button(unsigned port, unsigned id) {
 }
 
 static int key_axis(SDL_Scancode neg, SDL_Scancode pos) {
-  return (keys[pos] ? 0x7fff : 0) - (keys[neg] ? 0x7fff : 0);
+  return (key_down(pos) ? 0x7fff : 0) - (key_down(neg) ? 0x7fff : 0);
 }
 
 static int16_t analog(unsigned port, unsigned index, unsigned id) {
@@ -1221,7 +1224,7 @@ static int16_t analog(unsigned port, unsigned index, unsigned id) {
     if (left) v = x_axis ? key_axis(SDL_SCANCODE_LEFT, SDL_SCANCODE_RIGHT) : key_axis(SDL_SCANCODE_UP, SDL_SCANCODE_DOWN);
     else v = x_axis ? key_axis(SDL_SCANCODE_J, SDL_SCANCODE_L) : key_axis(SDL_SCANCODE_I, SDL_SCANCODE_K); /* C buttons */
   }
-  if (pads[port]) {
+  if (pads[port] && !pads_muted) {
     SDL_GameControllerAxis ax = left ? (x_axis ? SDL_CONTROLLER_AXIS_LEFTX : SDL_CONTROLLER_AXIS_LEFTY)
                                      : (x_axis ? SDL_CONTROLLER_AXIS_RIGHTX : SDL_CONTROLLER_AXIS_RIGHTY);
     int p = SDL_GameControllerGetAxis(pads[port], ax);
@@ -1261,12 +1264,7 @@ static void pad_added(int device_index) {
     if (!pads[i]) free_slot = i;
     else if (SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(pads[i])) == id) return; /* already open */
   }
-  if (free_slot < 0) return;
-  if (!SDL_IsGameController(device_index)) {
-    const char *name = SDL_JoystickNameForIndex(device_index);
-    fprintf(stderr, "[player] ignoring a controller this player has no layout for: %s\n", name ? name : "(no name)");
-    return;
-  }
+  if (free_slot < 0 || !SDL_IsGameController(device_index)) return; /* (one without a layout is named in the log when it is plugged in) */
   pads[free_slot] = SDL_GameControllerOpen(device_index);
   if (pads[free_slot]) fprintf(stderr, "[player] controller %d: %s\n", free_slot + 1, SDL_GameControllerName(pads[free_slot]));
 }
@@ -1450,12 +1448,18 @@ static void save_state(void) {
   free(buf);
 }
 
+static char old_state_path[2048]; /* where versions up to 0.3.2 kept the state: <game>.state */
+
 static void load_state(void) {
   size_t len = 0, want = core.serialize_size();
   void *buf = read_file(state_path, &len);
+  bool old = false;
+  /* A state saved before its name carried the game file's fingerprint. (Read
+   * only, never renamed: the app can fall back to the version that wrote it.) */
+  if (!buf && old_state_path[0]) { buf = read_file(old_state_path, &len); old = buf != NULL; }
   if (!buf) fprintf(stderr, "[player] there is no saved state to load\n");
   else if (len != want) fprintf(stderr, "[player] the saved state is %zu bytes instead of %zu: not loaded\n", len, want);
-  else if (core_unserialize(buf, len)) fprintf(stderr, "[player] state loaded\n");
+  else if (core_unserialize(buf, len)) fprintf(stderr, old ? "[player] state from an earlier version handed to the core\n" : "[player] state loaded\n");
   else fprintf(stderr, "[player] the core did not take the saved state\n");
   free(buf);
 }
@@ -1516,6 +1520,8 @@ static bool in_fullscreen(void) { return sdl_fullscreen() || native_fullscreen()
 
 /* Keeps SDL's flag and the mouse pointer in line with the window. Called a
  * few times a second, and before a full screen key is acted on. */
+static Uint32 fullscreen_seen; /* when the window was last in full screen, or seen to have just left it (0: never) */
+
 static void watch_fullscreen(void) {
   static bool was_native, pointer_hidden;
   bool flag = sdl_fullscreen(), real = native_fullscreen();
@@ -1524,6 +1530,7 @@ static void watch_fullscreen(void) {
     flag = sdl_fullscreen();
   }
   was_native = flag && real;
+  if (flag || real || pointer_hidden) fullscreen_seen = SDL_GetTicks() | 1;
   if ((flag || real) != pointer_hidden) {
     pointer_hidden = flag || real;
     SDL_ShowCursor(pointer_hidden ? SDL_DISABLE : SDL_ENABLE);
@@ -1685,6 +1692,7 @@ int main(int argc, char **argv) {
     /* A saved state belongs to one build of a game: a changed file starts
      * without one instead of with one the core can't use. (The battery
      * save above keeps its name, it has to survive updates.) */
+    snprintf(old_state_path, sizeof old_state_path, "%s", state_path);
     snprintf(state_path, sizeof state_path, "%s/%s-%08x.state", save_dir, rom_base, (unsigned)fnv1a(rom_data, len));
   }
 
@@ -1774,6 +1782,11 @@ int main(int argc, char **argv) {
       if (e.type == SDL_QUIT) running = false;
       else if (e.type == SDL_CONTROLLERDEVICEADDED) pad_added(e.cdevice.which);
       else if (e.type == SDL_CONTROLLERDEVICEREMOVED) pad_removed(e.cdevice.which);
+      else if (e.type == SDL_JOYDEVICEADDED && !SDL_IsGameController(e.jdevice.which)) {
+        const char *name = SDL_JoystickNameForIndex(e.jdevice.which);
+        fprintf(stderr, "[player] ignoring a controller this player has no layout for: %s\n", name ? name : "(no name)");
+      }
+      else if (e.type == SDL_KEYUP && e.key.keysym.scancode == shortcut_key) shortcut_key = SDL_SCANCODE_UNKNOWN;
       else if (e.type == SDL_KEYDOWN && !e.key.repeat) {
         SDL_Keycode k = e.key.keysym.sym;
 #if defined(__APPLE__) || defined(DL_MAC_KEYS) /* (the second one: to try the Mac's rules on another system) */
@@ -1784,11 +1797,12 @@ int main(int argc, char **argv) {
         bool cmd = (e.key.keysym.mod & (KMOD_GUI | KMOD_CTRL)) != 0;
         bool menu_does_it = false;
 #endif
+        if (cmd) shortcut_key = e.key.keysym.scancode;
         if (k == SDLK_F11 || (cmd && k == SDLK_f)) { if (!menu_does_it) toggle_fullscreen(); }
         else if (k == SDLK_ESCAPE) {
           watch_fullscreen();
           if (in_fullscreen()) toggle_fullscreen();
-          else running = false;
+          else if (!fullscreen_seen || SDL_GetTicks() - fullscreen_seen >= 1500) running = false; /* not while it is still leaving full screen: a second Esc there is one too many, not "quit" */
         } else if (cmd && (k == SDLK_q || k == SDLK_w)) running = false;
         else if (k == SDLK_F5 || (cmd && k == SDLK_s)) save_state();
         else if (k == SDLK_F9 || (cmd && k == SDLK_l)) load_state();
@@ -1800,6 +1814,15 @@ int main(int argc, char **argv) {
     if (!running) break;
     if (front_requested) { front_requested = 0; bring_to_front(); }
     if (frame_no % 20 == 10) watch_fullscreen();
+    {
+      /* Controllers are heard without the keyboard too (the window can come
+       * up without it), but not once the window had it and gave it away:
+       * then the person is in another app, or in another game. */
+      static bool had_focus;
+      bool focused = (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS) != 0;
+      if (focused) had_focus = true;
+      pads_muted = had_focus && !focused;
+    }
     if (!focus_logged && frame_no == 30) {
       /* Started by another app, the window may be on top without having the keyboard. */
       bool focused = (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS) != 0;
