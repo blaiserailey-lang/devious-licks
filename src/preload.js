@@ -17,6 +17,16 @@ contextBridge.exposeInMainWorld('library', {
       })
     ),
   removeLocal: (id) => ipcRenderer.invoke('local:remove', id),
+  // A picture for a game added from a file: the dropped file, or (without one) the app asks which.
+  setCover: (id, file) => {
+    let from = '';
+    try {
+      from = file ? webUtils.getPathForFile(file) : '';
+    } catch {
+      from = '';
+    }
+    return ipcRenderer.invoke('local:cover', id, file ? from || null : ''); // null: something was dropped that is not a file on this Mac
+  },
   onProgress: (fn) => ipcRenderer.on('library:progress', (_e, p) => fn(p)),
   // "This window has drawn its page and is talking to the app." An update
   // has to get this far before it counts as working (see main.js).

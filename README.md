@@ -27,6 +27,8 @@ If an N64 game misbehaves, the player's log is at `~/Library/Application Support
 
 Click **Add game** (or drag a ROM onto the library window). Unpack a zipped game first: the app takes the game file itself (.z64, .n64 or .v64 for N64). The file is copied into the app's own folder on that Mac and shows up with an **On this Mac** tag. It is never uploaded and nobody else sees it, which makes it handy for trying a build before you push it to everyone. Hover the card and click **×** to remove it. A changed file counts as a new game with its own save.
 
+To give such a game a picture, hover its card and click the picture button, or drop a picture (PNG, JPEG, GIF or WebP) onto the card. Like the game, the picture is copied into the app's own folder on that Mac and goes nowhere else. Removing the game removes its picture.
+
 ## Adding or updating a game
 
 Everything players see comes from the `catalog/` folder.

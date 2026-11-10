@@ -33,10 +33,38 @@ function renderFilters() {
   }
 }
 
+// A game's picture. Box art that is taller than the card's frame is shown
+// whole, over a blurred copy of itself, instead of being cut down to its middle.
+function art(game) {
+  const img = el('img', { className: 'cover', src: game.cover, alt: '', loading: 'lazy' });
+  const frame = el('div', { className: 'art' }, [img]);
+  img.addEventListener('load', () => {
+    if (img.naturalWidth > 480) frame.classList.add('smooth'); // a photo or a painting, not pixel art
+    if (img.naturalHeight > img.naturalWidth * 0.85) {
+      frame.classList.add('whole');
+      frame.prepend(el('img', { className: 'backdrop', src: game.cover, alt: '' }));
+    }
+  });
+  img.addEventListener('error', () => frame.replaceWith(el('div', { className: 'cover placeholder', textContent: game.title.slice(0, 1) })));
+  return frame;
+}
+
+const PICTURE_ICON =
+  '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="5.3" cy="6.2" r="1.3" fill="currentColor"/><path d="M2.5 12l3.4-3.3 2.3 2.1 2.6-3 2.7 4.2z" fill="currentColor"/></svg>';
+
+async function setCover(id, file) {
+  try {
+    const r = await window.library.setCover(id, file);
+    state = { ...state, games: r.games };
+    render();
+    if (r.message) toast(r.message);
+  } catch (err) {
+    toast(`The picture couldn't be set: ${(err && err.message) || err}`);
+  }
+}
+
 function card(game) {
-  const cover = game.cover
-    ? el('img', { className: 'cover', src: game.cover, alt: '', loading: 'lazy' })
-    : el('div', { className: 'cover placeholder', textContent: game.title.slice(0, 1) });
+  const cover = game.cover ? art(game) : el('div', { className: 'cover placeholder', textContent: game.title.slice(0, 1) });
   const tags = el('div', { className: 'tags' }, [
     el('span', { className: 'tag', textContent: consoleName(game.core) }),
     game.version ? el('span', { className: 'tag', textContent: `v${game.version}` }) : null,
@@ -58,6 +86,14 @@ function card(game) {
       .play(game.id, { reset: e.altKey, diagnose: e.shiftKey })
       .catch((err) => toast(`${game.title} couldn't be started: ${(err && err.message) || err}`));
   if (game.local) {
+    node.dataset.local = game.id;
+    const picture = el('span', { className: 'picture', title: game.cover ? 'Change the picture (or drop one here)' : 'Choose a picture (or drop one here)' });
+    picture.innerHTML = PICTURE_ICON;
+    picture.onclick = (e) => {
+      e.stopPropagation();
+      setCover(game.id);
+    };
+    node.append(picture);
     const remove = el('span', { className: 'remove', title: 'Remove from library', textContent: '×' });
     remove.onclick = async (e) => {
       e.stopPropagation();
@@ -141,7 +177,7 @@ async function addLocal(files) {
     state = { ...state, games: r.games };
     render();
     const parts = [];
-    if (r.added.length) parts.push(`Added ${r.added.join(', ')}`);
+    if (r.added.length) parts.push(`Added ${r.added.join(', ')} (drop a picture onto it to give it a cover)`);
     if (r.skipped.length) parts.push(r.skipped.join(' · '));
     if (parts.length) toast(parts.join(' · '));
   } catch (err) {
@@ -151,15 +187,46 @@ async function addLocal(files) {
 
 $('add').onclick = () => addLocal();
 let dragDepth = 0;
-window.addEventListener('dragenter', (e) => { e.preventDefault(); dragDepth++; $('dropzone').hidden = false; });
-window.addEventListener('dragleave', () => { if (--dragDepth <= 0) { dragDepth = 0; $('dropzone').hidden = true; } });
-window.addEventListener('dragover', (e) => e.preventDefault());
-window.addEventListener('drop', (e) => {
-  e.preventDefault();
+// What is being dragged in: game files (anywhere on the window adds them), or
+// pictures (dropped on a game that was added from a file, they become its picture).
+const isPicture = (f) => /^image\//.test(f.type || '') || /\.(png|jpe?g|gif|webp|heic|heif)$/i.test(f.name || '');
+const draggingPictures = (e) => {
+  const items = [...((e.dataTransfer && e.dataTransfer.items) || [])].filter((i) => i.kind === 'file');
+  return items.length > 0 && items.every((i) => /^image\//.test(i.type || ''));
+};
+const dragOver = () => {
   dragDepth = 0;
   $('dropzone').hidden = true;
+  document.body.classList.remove('picture-drag');
+  for (const c of document.querySelectorAll('.card.target')) c.classList.remove('target');
+};
+window.addEventListener('dragenter', (e) => {
+  e.preventDefault();
+  dragDepth++;
+  if (draggingPictures(e)) document.body.classList.add('picture-drag');
+  else $('dropzone').hidden = false;
+});
+window.addEventListener('dragleave', () => { if (--dragDepth <= 0) dragOver(); });
+window.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  if (!document.body.classList.contains('picture-drag')) return;
+  const over = e.target instanceof Element ? e.target.closest('.card[data-local]') : null;
+  for (const c of document.querySelectorAll('.card.target')) if (c !== over) c.classList.remove('target');
+  if (over) over.classList.add('target');
+});
+window.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dragOver();
   // (As an array: a FileList itself does not make it across to the app's side.)
-  if (e.dataTransfer.files.length) addLocal([...e.dataTransfer.files]);
+  const files = [...e.dataTransfer.files];
+  if (!files.length) return;
+  if (files.every(isPicture)) {
+    const onto = e.target instanceof Element ? e.target.closest('.card[data-local]') : null;
+    if (onto) setCover(onto.dataset.local, files[0]);
+    else toast(state.games.some((g) => g.local) ? 'Drop the picture onto a game you added (the ones marked "On this Mac") to give it that picture.' : 'Add a game first, then drop a picture onto it to give it a cover.');
+    return;
+  }
+  addLocal(files);
 });
 
 // ---------- the Update button ----------

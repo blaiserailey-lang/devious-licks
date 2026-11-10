@@ -1,7 +1,7 @@
 {
   "name": "devious-licks",
   "productName": "Devious Licks",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "The Devious Licks game library: every Devious Licks game, kept up to date, with a built-in emulator.",
   "main": "src/boot.js",
   "private": true,
@@ -16,7 +16,7 @@
     },
     "update": {
       "needsApp": "0.3.2",
-      "notes": "N64 player fixes: Esc and the green button in full screen, sound that could freeze the game, Cmd+S and Cmd+L for save states. Dragging a game onto the library works."
+      "notes": "Games you add from a file can have a picture: hover the game and click the picture button, or drop a picture onto it. The picture stays on this Mac, like the game."
     }
   },
   "scripts": {

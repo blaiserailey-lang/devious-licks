@@ -5,7 +5,7 @@ const originalFs = require('original-fs'); // sees app.asar as a file (Electron'
 const { spawn, spawnSync } = require('child_process');
 const { pathToFileURL } = require('url');
 const { Library, githubSource, folderSource } = require('./catalog');
-const { LocalGames, EXTENSIONS } = require('./local');
+const { LocalGames, EXTENSIONS, PICTURE_EXTENSIONS } = require('./local');
 const n64 = require('./n64');
 const packs = require('./packs');
 const { Updater } = require('./updater');
@@ -80,7 +80,7 @@ function after(seconds, then) {
 
 // app://app/...    -> files bundled with the app (UI, EmulatorJS, cores)
 // app://rom/<file> -> a downloaded ROM from the library cache
-// app://local/<file> -> a game added from a file on this Mac
+// app://local/<file> -> a game added from a file on this Mac, or the picture it was given
 // app://cover/<f>  -> a downloaded cover image
 protocol.registerSchemesAsPrivileged([
   { scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true } },
@@ -120,9 +120,12 @@ function registerProtocol() {
       return serveFile(library.romPath(game));
     }
     if (url.host === 'local') {
+      // Only files the list of added games names: a game, or a game's picture.
       const game = local.games.find((g) => g.romFile === rel);
-      if (!game) return new Response('Not found', { status: 404 });
-      return serveFile(local.romPath(game));
+      if (game) return serveFile(local.romPath(game));
+      const pictured = local.games.find((g) => local.coverOf(g) === rel);
+      if (pictured) return serveFile(path.join(local.dir, local.coverOf(pictured)));
+      return new Response('Not found', { status: 404 });
     }
     if (url.host === 'cover') {
       const file = path.join(library.dir, 'covers', rel);
@@ -597,6 +600,25 @@ app.whenReady().then(async () => {
     const paths = files.filter((f) => f && typeof f === 'string');
     // Something was dropped that is not a file on this Mac (a picture from a web page, a piece of text).
     return paths.length ? addLocal(paths) : { ...view(), added: [], skipped: ["That isn't a game file on this Mac"] };
+  });
+  // A picture for a game added from a file: the one dropped onto its card,
+  // or one picked here. It is copied into the app's own folder on this Mac.
+  ipcMain.handle('local:cover', async (_e, id, file) => {
+    if (typeof id !== 'string' || !local.find(id)) return { ...view(), message: 'That game is no longer in the library' };
+    if (file === null) return { ...view(), message: "That isn't a picture file on this Mac" };
+    let src = typeof file === 'string' ? file : '';
+    if (!src) {
+      const pick = await dialog.showOpenDialog(libraryWindow, {
+        title: `A picture for ${local.find(id).title}`,
+        buttonLabel: 'Use This Picture',
+        properties: ['openFile'],
+        filters: [{ name: 'Pictures', extensions: PICTURE_EXTENSIONS }],
+      });
+      if (pick.canceled || !pick.filePaths.length) return view();
+      src = pick.filePaths[0];
+    }
+    const result = await local.setCover(id, src);
+    return { ...view(), message: result.message };
   });
   ipcMain.handle('local:remove', async (_e, id) => {
     const choice = await dialog.showMessageBox(libraryWindow, {
