@@ -11,11 +11,13 @@
 #   player/selftest.sh                 test player/dist (what build-mac.sh made)
 #   PLAYER_DIR=<folder> selftest.sh    test the copy inside a packaged app
 set -uo pipefail
+START="$PWD"
 cd "$(dirname "$0")"
 ROOT="$PWD"
 WORK="$ROOT/.build"
 TMP="$WORK/selftest"
 DIR="${PLAYER_DIR:-$ROOT/dist}"
+case "$DIR" in /*) ;; *) DIR="$START/$DIR" ;; esac # PLAYER_DIR may be relative to where the script was started
 PLAYER="$DIR/dl-player"
 N64="$DIR/mupen64plus_next_libretro.dylib"
 TESTCORE="$WORK/test/test_libretro.dylib"

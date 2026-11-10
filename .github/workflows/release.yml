@@ -111,7 +111,7 @@ jobs:
           test -d "$APP/Contents/Resources/player"
           codesign --verify --deep --strict "$APP" || echo "::warning::codesign could not verify the packaged app"
           codesign -dv "$APP/Contents/Resources/player/dl-player" 2>&1 | sed -n '1,8p'
-          PLAYER_DIR="$APP/Contents/Resources/player" player/selftest.sh
+          PLAYER_DIR="$PWD/$APP/Contents/Resources/player" player/selftest.sh
 
       - uses: actions/upload-artifact@v4
         with:
