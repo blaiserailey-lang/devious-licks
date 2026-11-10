@@ -1,7 +1,7 @@
 {
   "name": "devious-licks",
   "productName": "Devious Licks",
-  "version": "0.3.4",
+  "version": "0.4.0",
   "description": "The Devious Licks game library: every Devious Licks game, kept up to date, with a built-in emulator.",
   "main": "src/boot.js",
   "private": true,
@@ -16,7 +16,7 @@
     },
     "update": {
       "needsApp": "0.3.2",
-      "notes": "Games you add from a file can have a picture: hover the game and click the picture button, or drop a picture onto it. The picture stays on this Mac, like the game."
+      "notes": "A new look: the library is now a console dashboard. Pick Games to flip through your games as boxes, Load ROM to add your own, and Settings for Update and Refresh. Works with the keyboard, a controller or the mouse."
     }
   },
   "scripts": {
@@ -25,6 +25,7 @@
     "start:local": "DL_CATALOG_DIR=./catalog electron .",
     "catalog": "node scripts/update-catalog.js",
     "test": "node --test test/*.test.js",
+    "check:dashboard": "node scripts/check-dashboard.js",
     "dist": "electron-builder --mac dmg --universal --publish never"
   },
   "build": {

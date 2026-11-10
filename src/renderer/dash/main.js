@@ -146,7 +146,7 @@ export function start(hooks) {
     if (page === 'home') items[selected].focus({ preventScroll: true });
     else if (page === 'games') {
       if (carousel.count) carousel.focus();
-      else $('.dn-home-back').focus({ preventScroll: true });
+      else $('#empty').focus({ preventScroll: true }); // (it says what to do; A has nothing to press here)
     } else {
       const list = rows();
       if (list.length) setRow(list.includes(current[page]) ? current[page] : list[0]);
@@ -351,6 +351,15 @@ export function start(hooks) {
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) travel.settle();
   });
+
+  // On a big screen the plain text (Settings, messages) grows with the window,
+  // the way the home screen and the boxes do by themselves.
+  const fit = () => {
+    const r = scene.getBoundingClientRect();
+    if (r.width) root.style.setProperty('--zoom', clamp(Math.min(r.width / 1280, r.height / 720), 1, 2.5).toFixed(3));
+  };
+  new ResizeObserver(fit).observe(scene);
+  fit();
 
   for (const el of Object.values(views)) el.inert = el.hidden;
   root.dataset.ready = '';

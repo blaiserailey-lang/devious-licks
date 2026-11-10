@@ -341,7 +341,7 @@ function check(what, ok, detail) {
     const seen = await w.page.evaluate(() => ({ empty: !document.getElementById('empty').hidden, text: document.getElementById('empty').textContent, covers: document.querySelectorAll('.dc-cover').length, select: document.querySelector('.dn-game-select').disabled, x: document.querySelector('.dn-game-remove').hidden }));
     check('a friendly empty state that points to Load ROM', seen.empty && /Load ROM/.test(seen.text) && seen.covers === 0 && seen.select && seen.x, seen);
     for (const key of ['Enter', 'ArrowRight', 'ArrowLeft', 'ArrowUp', 'x', 'y', '/', 'End']) await w.page.keyboard.press(key);
-    check('the keys do nothing there', (await w.calls('play')).length === 0);
+    check('the keys do nothing there', (await w.calls('play')).length === 0 && (await w.page.evaluate(() => document.getElementById('dash').dataset.page + (document.getElementById('dash').dataset.transitioning || ''))) === 'games');
     await w.shot('04-games-empty');
     await w.page.keyboard.press('Escape');
     await w.at('home');
@@ -823,6 +823,57 @@ function check(what, ok, detail) {
       s = await sound();
       check('quiet while another window is in use (a game)', !s.loop, s);
     } else console.log(`     (this browser gives no running audio here: ${s.context}; the playing itself was not checked)`);
+    await w.context.close();
+  });
+
+  await scene('nothing is drawn while the window is not in use', async () => {
+    const w = await open({
+      before: (page) =>
+        page.addInitScript(() => {
+          const raf = window.requestAnimationFrame.bind(window);
+          window.__frames = 0;
+          window.requestAnimationFrame = (fn) => {
+            window.__frames++;
+            return raf(fn);
+          };
+        }),
+    });
+    await w.page.waitForFunction(() => window.__calls.some((c) => c[0] === 'up'));
+    const frames = async (ms) => {
+      await w.page.evaluate(() => (window.__frames = 0));
+      await w.page.waitForTimeout(ms);
+      return w.page.evaluate(() => window.__frames);
+    };
+    const away = () =>
+      w.page.evaluate(() => {
+        Object.defineProperty(document, 'hasFocus', { value: () => false, configurable: true });
+        window.dispatchEvent(new Event('blur'));
+      });
+    const back = () =>
+      w.page.evaluate(() => {
+        delete document.hasFocus;
+        window.dispatchEvent(new Event('focus'));
+      });
+    const homeBusy = await frames(600);
+    await away();
+    await w.page.waitForTimeout(100);
+    const homeIdle = await frames(600);
+    check('home: the orb moves while the window is in use, and rests when it is not', homeBusy > 10 && homeIdle <= 1, { homeBusy, homeIdle });
+    await back();
+    await w.goTo('games');
+    await w.settled();
+    const gamesBusy = await frames(600);
+    await away();
+    await w.page.waitForTimeout(100);
+    const gamesIdle = await frames(600);
+    check('Games: the same for the backdrop', gamesBusy > 3 && gamesIdle <= 1, { gamesBusy, gamesIdle });
+    await back();
+    await w.page.keyboard.press('Escape');
+    await w.at('home');
+    await w.goTo('settings');
+    await w.page.waitForTimeout(200);
+    const settings = await frames(600);
+    check('Settings: nothing is animated at all', settings <= 1, settings);
     await w.context.close();
   });
 

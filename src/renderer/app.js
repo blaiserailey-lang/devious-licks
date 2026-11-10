@@ -64,7 +64,9 @@ function summarize(s) {
 }
 
 // ---------- the catalog ----------
-async function refresh() {
+// `quiet`: the look the app takes by itself when it opens. It only speaks up
+// when something changed.
+async function refresh(quiet = false) {
   const btn = $('refresh');
   if (btn.disabled) return;
   btn.disabled = true;
@@ -78,7 +80,8 @@ async function refresh() {
     else if (result.summary && result.summary.failed.length) showStatus(`Some games couldn't update: ${result.summary.failed.join('; ')}`, true);
     else showStatus('');
     const msg = summarize(result.summary);
-    if (msg) toast(msg);
+    const changed = result.summary && (result.summary.added.length || result.summary.updated.length || result.summary.removed.length);
+    if (msg && (!quiet || changed)) toast(msg);
   } finally {
     btn.disabled = false;
     btn.classList.remove('spinning');
@@ -305,7 +308,7 @@ $('update').onclick = updateClick;
 $('notice-page').onclick = openPage;
 $('notice-close').onclick = () => notice('');
 
-$('refresh').onclick = refresh;
+$('refresh').onclick = () => refresh();
 document.addEventListener('keydown', (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'r') { e.preventDefault(); refresh(); }
   // Command-F: the search field on the Games screen.
@@ -346,13 +349,13 @@ async function startDashboard() {
     state = await window.library.get();
     render();
     drawn = true;
-    refresh(); // check for new games every time the app opens
+    refresh(true); // check for new games every time the app opens
   } catch (err) {
     // Whatever is wrong with the library, the Update button has to stay
     // usable: a newer version may be the cure.
     if (!dash) document.documentElement.classList.add('dl-fallback');
     notice("The library couldn't be opened on this Mac. Updating the app may fix it.", { error: true, page: true, detail: String((err && err.message) || err) });
-    refresh().catch(() => {}); // a fresh copy of the catalog may be all it takes
+    refresh(true).catch(() => {}); // a fresh copy of the catalog may be all it takes
   }
   showUpdate(await window.library.update.get());
   // The page is drawn and the app answers: say so. (A new version of the app

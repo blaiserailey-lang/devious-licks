@@ -138,12 +138,13 @@ function registerProtocol() {
 
 function createLibraryWindow() {
   libraryWindow = new BrowserWindow({
-    width: 1180,
-    height: 780,
+    // The dashboard is a 16:9 picture (1280 by 720) under the strip the window is dragged by.
+    width: 1280,
+    height: 748,
     minWidth: 760,
     minHeight: 520,
     title: 'Devious Licks',
-    backgroundColor: '#0d0b12',
+    backgroundColor: '#000d00',
     titleBarStyle: 'hiddenInset',
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: true },
   });
