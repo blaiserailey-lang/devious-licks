@@ -351,6 +351,26 @@ test('a failure after the files are in place leaves nothing behind either', asyn
   } finally { await site.close(); }
 });
 
+test('the largest update the start-up rules accept can be read and installed', async () => {
+  // 500 files with long names: an update.json of several hundred kilobytes.
+  const files = { 'app.asar': 'the code' };
+  for (let n = 1; n < 500; n++) files[`cores/${'a-long-folder-name-'.repeat(4)}${n}/${'a-long-file-name-'.repeat(4)}${n}.bin`] = `file ${n}`;
+  const manifest = describe('0.3.3', files);
+  manifest.files.forEach((f, n) => { f.name = `file-${n}`; });
+  const text = JSON.stringify(manifest, null, 2);
+  assert.ok(text.length > 150000, `the description is ${text.length} bytes`);
+  assert.strictEqual(packs.accepts({ info: manifest, electron: '45.2.3', bundledVersion: '0.3.2' }), '');
+  const routes = { '/update.json': text };
+  manifest.files.forEach((f, n) => { routes[`/v0.3.3/file-${n}`] = Object.values(files)[n]; });
+  const site = await serve(routes);
+  try {
+    const { u, dir } = updater(site);
+    assert.strictEqual((await u.check()).phase, 'available');
+    assert.strictEqual((await u.install()).phase, 'ready');
+    assert.strictEqual(packs.choose({ fs, dir, bundledVersion: '0.3.2', electron: '45.2.3' }).files.length, 500);
+  } finally { await site.close(); }
+});
+
 test('errors are put in plain words', () => {
   assert.match(friendly(new Error('net::ERR_INTERNET_DISCONNECTED')), /reach GitHub/);
   assert.match(friendly(new Error('net::ERR_PROXY_CONNECTION_FAILED')), /reach GitHub/);

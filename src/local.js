@@ -22,7 +22,7 @@ function titleFromFile(file) {
 function valid(g) {
   return (
     Boolean(g) && typeof g === 'object' && !Array.isArray(g) &&
-    typeof g.id === 'string' && typeof g.title === 'string' && typeof g.core === 'string' && typeof g.sha256 === 'string' &&
+    typeof g.id === 'string' && Boolean(g.id) && typeof g.title === 'string' && typeof g.core === 'string' && Boolean(g.core) && typeof g.sha256 === 'string' &&
     typeof g.romFile === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/.test(g.romFile)
   );
 }
@@ -98,19 +98,24 @@ class LocalGames {
         result.skipped.push(`${path.basename(src)}: not a supported game file`);
         continue;
       }
-      const buf = await fsp.readFile(src);
-      const sha256 = crypto.createHash('sha256').update(buf).digest('hex');
-      const existing = this.games.find((g) => g.sha256 === sha256);
-      if (existing) {
-        result.skipped.push(`${existing.title} is already in your library`);
-        continue;
+      // One file that can't be read or copied must not cost the others their place in the list.
+      try {
+        const buf = await fsp.readFile(src);
+        const sha256 = crypto.createHash('sha256').update(buf).digest('hex');
+        const existing = this.games.find((g) => g.sha256 === sha256);
+        if (existing) {
+          result.skipped.push(`${existing.title} is already in your library`);
+          continue;
+        }
+        const id = `local-${sha256.slice(0, 12)}`;
+        const romFile = `${id}${ext}`;
+        await fsp.writeFile(path.join(this.dir, romFile), buf);
+        const title = titleFromFile(src);
+        this.games.push({ id, title, core, romFile, sha256, addedAt: new Date().toISOString() });
+        result.added.push(title);
+      } catch (err) {
+        result.skipped.push(`${path.basename(src)}: could not be read (${(err && err.code) || 'error'})`);
       }
-      const id = `local-${sha256.slice(0, 12)}`;
-      const romFile = `${id}${ext}`;
-      await fsp.writeFile(path.join(this.dir, romFile), buf);
-      const title = titleFromFile(src);
-      this.games.push({ id, title, core, romFile, sha256, addedAt: new Date().toISOString() });
-      result.added.push(title);
     }
     await this.save();
     return result;

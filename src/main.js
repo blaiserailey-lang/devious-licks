@@ -53,7 +53,9 @@ function say(line) {
 // (The lock keeps a socket in the temporary folder, and the length of such a
 // path has a hard limit. Where that folder's name is unusually long, the app
 // does without the lock rather than not start at all.)
-const lockable = path.join(app.getPath('temp'), 'scoped_dirXXXXXX', 'SingletonSocket').length < 100;
+// (The folder is named after the app on a Mac: ".<bundle id>.XXXXXX".)
+const lockFolder = process.platform === 'darwin' ? `.${(pkg.build && pkg.build.appId) || 'com.deviouslicks.library'}.XXXXXX` : '.org.chromium.Chromium.XXXXXX';
+const lockable = path.join(app.getPath('temp'), lockFolder, 'SingletonSocket').length < 104;
 const FIRST = SMOKE || !lockable || app.requestSingleInstanceLock();
 if (!FIRST) {
   boot.excused();
@@ -518,10 +520,12 @@ app.whenReady().then(async () => {
   updater = makeUpdater();
   // The About box reads the installed app's version; say which one is really running.
   if (boot.pack) app.setAboutPanelOptions({ applicationVersion: pkg.version, version: `installed app ${boot.bundledVersion}` });
+  // Whatever is wrong with the saved library, the window has to open: the
+  // Update button in it may be the way to put things right.
   library = new Library(path.join(app.getPath('userData'), 'library'), makeSource());
-  await library.load();
+  await library.load().catch((err) => console.error(`[library] could not be read: ${(err && err.message) || err}`));
   local = new LocalGames(path.join(app.getPath('userData'), 'local-games'));
-  await local.load();
+  await local.load().catch((err) => console.error(`[library] added games could not be read: ${(err && err.message) || err}`));
   registerProtocol();
 
   ipcMain.handle('library:get', () => view());

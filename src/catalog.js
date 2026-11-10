@@ -20,6 +20,9 @@ function safeExt(file, fallback) {
   return /^\.[a-z0-9]{1,8}$/.test(ext) ? ext : fallback;
 }
 
+// A value from the catalog as text: a string or a number, anything else is ''.
+const text = (v) => (typeof v === 'string' ? v : typeof v === 'number' && Number.isFinite(v) ? String(v) : '');
+
 // A game's id becomes the name of its files in the library folder, so it has
 // to be a plain name (the same rule scripts/update-catalog.js checks).
 const ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
@@ -33,13 +36,17 @@ function catalogPath(file) {
 
 // One entry of games.json, as far as the app relies on it.
 function validEntry(g) {
-  return Boolean(g) && typeof g === 'object' && typeof g.id === 'string' && ID.test(g.id) && catalogPath(g.rom) && typeof g.core === 'string' && Boolean(g.core);
+  return (
+    Boolean(g) && typeof g === 'object' && typeof g.id === 'string' && ID.test(g.id) && catalogPath(g.rom) &&
+    typeof g.core === 'string' && Boolean(g.core) && typeof g.title === 'string' && Boolean(g.title)
+  );
 }
 
 // One game as kept in library.json.
 function validCached(g) {
   return (
     Boolean(g) && typeof g === 'object' && typeof g.id === 'string' && ID.test(g.id) &&
+    typeof g.core === 'string' && Boolean(g.core) && typeof g.title === 'string' && Boolean(g.title) &&
     typeof g.romFile === 'string' && CACHED.test(g.romFile) &&
     (g.coverFile === undefined || g.coverFile === null || (typeof g.coverFile === 'string' && CACHED.test(g.coverFile)))
   );
@@ -127,17 +134,18 @@ class Library {
     return {
       source: this.source.describe(),
       syncedAt: this.state.syncedAt,
-      studio: this.state.studio || 'Devious Licks',
+      studio: text(this.state.studio) || 'Devious Licks',
+      // (Whatever the catalog said, the window gets text where it expects text.)
       games: this.state.games.map((g) => ({
         id: g.id,
-        title: g.title,
+        title: text(g.title) || g.id,
         core: g.core,
-        description: g.description || '',
-        version: g.version || '',
-        players: g.players || 1,
-        year: g.year || '',
-        status: g.changedAt && Date.now() - Date.parse(g.changedAt) < BADGE_MS ? g.status : null,
-        cover: g.coverFile ? `app://cover/${encodeURIComponent(g.coverFile)}?v=${(g.coverSha256 || '').slice(0, 12)}` : null,
+        description: text(g.description),
+        version: text(g.version),
+        players: Number.isInteger(g.players) && g.players > 0 ? g.players : 1,
+        year: text(g.year),
+        status: text(g.changedAt) && Date.now() - Date.parse(g.changedAt) < BADGE_MS && (g.status === 'new' || g.status === 'updated') ? g.status : null,
+        cover: g.coverFile ? `app://cover/${encodeURIComponent(g.coverFile)}?v=${text(g.coverSha256).slice(0, 12)}` : null,
       })),
     };
   }
@@ -209,7 +217,7 @@ class Library {
               const buf = await this.source.get(entry.cover);
               await this.writeAtomic(coverTarget, buf);
               game.coverFile = coverFile;
-              game.coverSha256 = entry.coverSha256 || sha256(buf);
+              game.coverSha256 = text(entry.coverSha256) || sha256(buf);
             } catch {
               /* a missing cover shouldn't block the game */
             }

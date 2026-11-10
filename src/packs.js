@@ -240,7 +240,7 @@ function choose({ fs, dir, bundledVersion, electron, skipped = [] }) {
       continue;
     }
     if (isBad(state, version)) {
-      skip(`it was set aside: ${state.bad[version]}`);
+      skip(`it was set aside: ${typeof state.bad[version] === 'string' ? state.bad[version] : 'no reason noted'}`);
       continue;
     }
     if (startsOf(state, version) >= MAX_STARTS) {

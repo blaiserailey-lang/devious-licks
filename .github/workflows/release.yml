@@ -70,6 +70,14 @@ jobs:
             echo "::error::A release is published from the $DEFAULT_BRANCH branch only, and this run is on $REF_NAME. For a test build of this branch, run it again with \"Publish\" unticked."
             exit 1
           fi
+          # (A tag has to sit on that branch too.)
+          if [ "$REF_TYPE" = "tag" ]; then
+            WHERE="$(gh api "repos/$GH_REPO/compare/$DEFAULT_BRANCH...$GITHUB_SHA" --jq .status 2>/dev/null || true)"
+            if [ "$WHERE" != "identical" ] && [ "$WHERE" != "behind" ]; then
+              echo "::error::The tag $REF_NAME is not on the $DEFAULT_BRANCH branch, and a release is published from that branch only."
+              exit 1
+            fi
+          fi
           if [ "$REF_TYPE" = "tag" ] && [ "$REF_NAME" != "$WANT" ]; then
             echo "::error::The tag is $REF_NAME, but package.json says version ${WANT#v}. Delete that tag, set \"version\" in package.json to the version you mean, and release again (Actions > Release Mac app > Run workflow)."
             exit 1
@@ -204,7 +212,7 @@ jobs:
           # start of a file of the newest release with the code the button
           # uses. GitHub passes such a request on twice, the second time to
           # its download servers, and the app has to follow.
-          FILE="$(gh release view --json assets --jq '.assets[0].name | @uri' 2>/dev/null || true)"
+          FILE="$(gh release view --json assets --jq '.assets[0].name // empty | @uri' 2>/dev/null || true)"
           if [ -n "$FILE" ]; then
             DL_SMOKE_FETCH="https://github.com/$GITHUB_REPOSITORY/releases/latest/download/$FILE" \
               perl -e 'alarm shift; exec @ARGV' 120 "$APP/Contents/MacOS/Devious Licks" --smoke-test >smoke.log 2>&1 || true
@@ -277,6 +285,15 @@ jobs:
           ls -lh out out/update
           DMG="$(ls out/*.dmg)"
           cat out/update/update.json
+
+          # Versions only go up (asked again here: this job can be run again
+          # by itself, long after the build that fed it).
+          NEWEST="$(gh release view --json tagName --jq .tagName 2>/dev/null || true)"
+          if echo "$NEWEST" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' && [ "$NEWEST" != "$TAG" ] \
+            && [ "$(printf '%s\n%s\n' "${NEWEST#v}" "${TAG#v}" | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)" != "${TAG#v}" ]; then
+            echo "::error::The newest release is ${NEWEST#v}, and ${TAG#v} would come before it: not published."
+            exit 1
+          fi
 
           # Where does this version stand on GitHub?
           STATE=new

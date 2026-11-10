@@ -131,3 +131,49 @@ test('a saved library this version cannot read is rebuilt, and never leads outsi
     assert.strictEqual(fs.readFileSync(path.join(home, 'precious.txt'), 'utf8'), 'keep me', saved);
   }
 });
+
+test('a game without a proper title or console is left out, in the catalog and in what was saved', async () => {
+  const dir = makeCatalog([{ id: 'good', data: 'A' }, { id: 'untitled', data: 'B' }, { id: 'numbered', data: 'C' }, { id: 'coreless', data: 'D' }]);
+  const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'games.json'), 'utf8'));
+  delete manifest.games[1].title;
+  manifest.games[2].title = 1942;
+  manifest.games[3].core = '';
+  fs.writeFileSync(path.join(dir, 'games.json'), JSON.stringify(manifest));
+  const libDir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'dl-lib-')), 'library');
+  const lib = new Library(libDir, folderSource(dir));
+  await lib.load();
+  const r = await lib.refresh();
+  assert.deepStrictEqual(r.games.map((g) => g.id), ['good']);
+  assert.match(r.summary.failed.join('\n'), /3 catalog entries are not valid/);
+  // ...and one that an earlier or later version saved that way is not handed to the window either.
+  const saved = JSON.parse(fs.readFileSync(path.join(libDir, 'library.json'), 'utf8'));
+  saved.games.push({ id: 'old', romFile: 'old.nes', core: 'nes' }, { id: 'older', romFile: 'older.nes', title: 'Older' });
+  fs.writeFileSync(path.join(libDir, 'library.json'), JSON.stringify(saved));
+  const again = new Library(libDir, folderSource(dir));
+  const view = await again.load();
+  assert.deepStrictEqual(view.games.map((g) => [g.id, typeof g.title, typeof g.core]), [['good', 'string', 'string']]);
+});
+
+test('odd values in the catalog or in the saved library never reach the window as anything but text', async () => {
+  const dir = makeCatalog([{ id: 'odd', data: 'A' }]);
+  const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'games.json'), 'utf8'));
+  Object.assign(manifest.games[0], { description: { en: 'x' }, version: 2, year: 1996, players: 'two', coverSha256: 12345 });
+  manifest.studio = ['x'];
+  fs.writeFileSync(path.join(dir, 'games.json'), JSON.stringify(manifest));
+  const libDir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'dl-lib-')), 'library');
+  const lib = new Library(libDir, folderSource(dir));
+  await lib.load();
+  const r = await lib.refresh();
+  assert.deepStrictEqual(
+    r.games.map((g) => [g.description, g.version, g.year, g.players]),
+    [['', '2', '1996', 1]]
+  );
+  assert.strictEqual(r.studio, 'Devious Licks');
+  // The same from a saved file: a cover hash that is a number must not stop the library from opening.
+  const saved = JSON.parse(fs.readFileSync(path.join(libDir, 'library.json'), 'utf8'));
+  Object.assign(saved.games[0], { coverFile: 'odd.png', coverSha256: 12345, changedAt: 7, status: {} });
+  fs.writeFileSync(path.join(libDir, 'library.json'), JSON.stringify(saved));
+  const view = await new Library(libDir, folderSource(dir)).load();
+  assert.strictEqual(view.games.length, 1);
+  assert.strictEqual(view.games[0].status, null);
+});

@@ -14,6 +14,7 @@ const { pipeline, finished } = require('stream/promises');
 const packs = require('./packs');
 
 const CHUNK = 1 << 20;
+const MAX_INFO = 2 * 1024 * 1024; // several times the largest update.json the rules in packs.js accept
 const STALLED = 'The connection to GitHub went quiet, so the app stopped waiting. Try again.';
 const UNREADABLE = 'The update information could not be read. Try again later.';
 const REDIRECTED = 'The download was redirected somewhere unexpected.';
@@ -184,7 +185,7 @@ class Updater {
         req.end();
         throw new Error(`The update server answered ${req.res.status} instead of the list of updates. Try again later.`);
       }
-      const text = await this.readText(req, 100000);
+      const text = await this.readText(req, MAX_INFO);
       let raw;
       try {
         raw = JSON.parse(text);

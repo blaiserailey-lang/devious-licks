@@ -283,6 +283,7 @@ document.addEventListener('keydown', (e) => {
     // Whatever is wrong with the library, the Update button has to stay
     // usable: a newer version may be the cure.
     notice("The library couldn't be opened on this Mac. Updating the app may fix it.", { error: true, page: true, detail: String((err && err.message) || err) });
+    refresh().catch(() => {}); // a fresh copy of the catalog may be all it takes
   }
   showUpdate(await window.library.update.get());
   // The page is drawn and the app answers: say so. (A new version of the app

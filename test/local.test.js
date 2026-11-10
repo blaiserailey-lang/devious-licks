@@ -64,3 +64,18 @@ test('a list of local games kept by a later version is never written over', asyn
   await lib.load();
   assert.deepStrictEqual(lib.games.map((g) => g.romFile), ['local-aaaaaaaaaaaa.z64']);
 });
+
+test('one file that cannot be read does not cost the others their place in the list', async () => {
+  const src = fs.mkdtempSync(path.join(os.tmpdir(), 'dl-src-'));
+  fs.writeFileSync(path.join(src, 'Kept.nes'), 'nesdata');
+  fs.mkdirSync(path.join(src, 'Folder.z64')); // reading it fails with EISDIR
+  const lib = new LocalGames(fs.mkdtempSync(path.join(os.tmpdir(), 'dl-local-')));
+  await lib.load();
+  const r = await lib.add([path.join(src, 'Kept.nes'), path.join(src, 'Folder.z64'), path.join(src, 'Gone.gba')]);
+  assert.deepStrictEqual(r.added, ['Kept']);
+  assert.strictEqual(r.skipped.length, 2);
+  assert.match(r.skipped[0], /Folder\.z64: could not be read \(EISDIR\)/);
+  const again = new LocalGames(lib.dir);
+  await again.load();
+  assert.deepStrictEqual(again.view().map((g) => g.title), ['Kept']);
+});

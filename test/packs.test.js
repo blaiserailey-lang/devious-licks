@@ -349,3 +349,14 @@ test('choose says which packs it passed over, and why', () => {
   // and it still works without a list to fill
   assert.strictEqual(choose(dir, '0.3.2').version, '0.3.3');
 });
+
+test('a reason for setting a pack aside that is not text does not stop the choice', () => {
+  const dir = tmp();
+  makePack(dir, '0.3.3');
+  current(dir, '0.3.3');
+  // (Written by hand, or by something else: a value that cannot even be turned into text.)
+  fs.writeFileSync(path.join(dir, 'state.json'), '{"good":null,"starts":{},"bad":{"0.3.3":{"toString":1}}}');
+  const skipped = [];
+  assert.strictEqual(packs.choose({ fs, dir, bundledVersion: '0.3.2', electron: '45.2.3', skipped }), null);
+  assert.match(skipped.map((s) => s.why).join('\n'), /set aside: no reason noted/);
+});
