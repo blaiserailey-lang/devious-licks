@@ -1,19 +1,4 @@
 {
   "studio": "Devious Licks",
-  "games": [
-    {
-      "id": "color-lick",
-      "title": "Color Lick (test cart)",
-      "core": "nes",
-      "version": "1.0.0",
-      "description": "A tiny test cart to check the emulator works. Hold A (the Z key by default) to cycle colors. Delete it once real games are in.",
-      "players": 1,
-      "year": 2026,
-      "rom": "roms/color-lick.nes",
-      "cover": "covers/color-lick.png",
-      "sha256": "382d5045f72dcd0fb8304717f3946cc3e9daa34dbc04e31c58832ac4fc9bd2ce",
-      "size": 24592,
-      "coverSha256": "c455f4b7749436cc7a567d4234f8ac262bb703b022a49ccae261c1245cebd6b1"
-    }
-  ]
+  "games": []
 }
