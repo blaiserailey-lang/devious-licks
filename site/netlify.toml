@@ -1,0 +1,9 @@
+# Netlify: publish this folder as is, no build step.
+[build]
+  publish = "."
+  command = ""
+
+[[headers]]
+  for = "/media/*"
+  [headers.values]
+    Cache-Control = "public, max-age=604800"
