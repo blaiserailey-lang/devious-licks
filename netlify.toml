@@ -1,0 +1,10 @@
+# Netlify serves the landing page in site/ as is (no build step).
+# The rest of the repo is the Mac app and is not published.
+[build]
+  publish = "site"
+  command = ""
+
+[[headers]]
+  for = "/media/*"
+  [headers.values]
+    Cache-Control = "public, max-age=604800"
