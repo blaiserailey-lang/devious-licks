@@ -54,7 +54,7 @@ a { color: var(--acid); }
   transition: opacity .9s ease, visibility 0s linear .9s;
 }
 #intro.done { opacity: 0; visibility: hidden; }
-#intro video { width: 100%; height: 100%; object-fit: contain; }
+#intro video { position: absolute; inset: 0; width: 100%; height: 100%; max-width: none; object-fit: contain; object-position: 50% 50%; }
 .reel-controls {
   position: absolute; display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end;
   right: max(18px, env(safe-area-inset-right, 0px)); bottom: max(18px, env(safe-area-inset-bottom, 0px));
