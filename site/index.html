@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Devious Licks Games</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="Download the Devious Licks game library for Mac: every Devious Licks game, kept up to date, with the emulator built in.">
+<meta property="og:title" content="Devious Licks Games">
+<meta property="og:description" content="The Devious Licks game library for Mac. Free download.">
+<meta property="og:image" content="media/intro-poster.jpg">
+<meta name="theme-color" content="#000d00">
+<link rel="icon" type="image/png" sizes="32x32" href="media/icon-32.png">
+<link rel="apple-touch-icon" href="media/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:ital,wght@0,500;0,700;1,700&family=Barlow:wght@400;500;600&display=swap">
+<style>
+/* Layout: an intro reel that hands off to one console "home screen" (orb + download bar), then the app's screens and the first-launch steps. */
+:root {
+  --ink: #000d00;        /* the app's background */
+  --ink-2: #031a03;      /* raised panels */
+  --acid: #baff00;       /* main glow */
+  --lime: #62ff0a;       /* grid and borders */
+  --yellow: #f6ff4d;     /* the selected bar */
+  --text: #f4ffd0;
+  --soft: #c9dcb0;
+  --dim: #86a46f;
+  --display: "Chakra Petch", "Arial Narrow", Arial, sans-serif;
+  --body: "Barlow", "Helvetica Neue", Arial, sans-serif;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { background: var(--ink); }
+body {
+  margin: 0; background: var(--ink); color: var(--text);
+  font: 400 17px/1.55 var(--body);
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+img, video { max-width: 100%; display: block; }
+a { color: var(--acid); }
+:focus-visible { outline: 3px solid var(--yellow); outline-offset: 3px; }
+.wrap {
+  max-width: 1160px; margin: 0 auto;
+  padding-left: max(20px, env(safe-area-inset-left, 0px));
+  padding-right: max(20px, env(safe-area-inset-right, 0px));
+}
+
+/* ---------- intro reel ---------- */
+#intro {
+  position: fixed; inset: 0; z-index: 50; background: #000;
+  display: grid; place-items: center;
+  transition: opacity .9s ease, visibility 0s linear .9s;
+}
+#intro.done { opacity: 0; visibility: hidden; }
+#intro video { position: absolute; inset: 0; width: 100%; height: 100%; max-width: none; object-fit: contain; object-position: 50% 50%; }
+.reel-controls {
+  position: absolute; display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end;
+  right: max(18px, env(safe-area-inset-right, 0px)); bottom: max(18px, env(safe-area-inset-bottom, 0px));
+}
+.reel-btn {
+  font: 700 13px/1 var(--display); letter-spacing: .18em; text-transform: uppercase;
+  color: var(--text); background: rgba(0, 13, 0, .65); border: 1px solid rgba(186, 255, 0, .45);
+  padding: 11px 16px; border-radius: 999px; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 8px;
+}
+.reel-btn:hover { border-color: var(--acid); color: var(--acid); }
+.reel-btn .key {
+  display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%;
+  border: 1.5px solid var(--acid); color: var(--acid); font-size: 11px; letter-spacing: 0;
+}
+#play-big {
+  position: absolute; inset: 0; margin: auto; width: 96px; height: 96px; border-radius: 50%;
+  border: 3px solid var(--acid); background: radial-gradient(circle at 40% 35%, #2a5a00, #001a00 70%);
+  color: var(--text); font: 700 38px var(--display); cursor: pointer;
+  box-shadow: 0 0 30px rgba(186, 255, 0, .5);
+}
+
+/* ---------- home ---------- */
+.home { position: relative; overflow: hidden; isolation: isolate; }
+.home::before, .home::after {
+  /* the dashboard's curved neon grid, one tunnel wall each side */
+  content: ""; position: absolute; top: -10%; bottom: -10%; width: 46%; z-index: -1;
+  background:
+    repeating-linear-gradient(90deg, rgba(98, 255, 10, .55) 0 2px, transparent 2px 64px),
+    repeating-linear-gradient(0deg, rgba(98, 255, 10, .55) 0 2px, transparent 2px 64px);
+  -webkit-mask-image: radial-gradient(ellipse 80% 70% at var(--mx) 50%, #000 25%, transparent 72%);
+          mask-image: radial-gradient(ellipse 80% 70% at var(--mx) 50%, #000 25%, transparent 72%);
+  opacity: .5;
+}
+.home::before { left: -6%; --mx: 0%; transform: perspective(700px) rotateY(58deg); transform-origin: left center; }
+.home::after { right: -6%; --mx: 100%; transform: perspective(700px) rotateY(-58deg); transform-origin: right center; }
+.home-glow {
+  position: absolute; inset: 0; z-index: -1; pointer-events: none;
+  background: radial-gradient(ellipse 55% 60% at 30% 50%, rgba(98, 255, 10, .16), transparent 70%);
+}
+.home-grid {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); align-items: center;
+  gap: clamp(24px, 4vw, 56px); padding-block: clamp(40px, 8vw, 96px) clamp(48px, 8vw, 104px);
+}
+.orb {
+  width: min(100%, 420px); justify-self: center; height: auto;
+  filter: drop-shadow(0 0 40px rgba(186, 255, 0, .35));
+  animation: bob 6s ease-in-out infinite;
+}
+@keyframes bob { 50% { transform: translateY(-10px) rotate(-1.5deg); } }
+.eyebrow {
+  font: 700 13px/1 var(--display); letter-spacing: .32em; text-transform: uppercase; color: var(--dim);
+  margin: 0 0 14px;
+}
+h1 {
+  margin: 0; font: italic 700 clamp(44px, 7.4vw, 92px)/.92 var(--display); letter-spacing: .01em;
+  text-transform: uppercase; color: var(--text); text-wrap: balance;
+  text-shadow: 0 0 22px rgba(186, 255, 0, .35);
+}
+h1 span { color: var(--acid); }
+.lede { margin: 20px 0 30px; max-width: 34em; color: var(--soft); font-size: 19px; }
+
+/* The download bar is the app's selected menu bar: clipped corners, yellow fading to green. */
+.bar {
+  --cut: 12px;
+  display: flex; align-items: center; gap: 16px; text-decoration: none;
+  max-width: 520px; padding: 18px 26px 18px 22px; color: #071100;
+  clip-path: polygon(var(--cut) 0, calc(100% - var(--cut)) 0, 100% var(--cut), 100% calc(100% - var(--cut)), calc(100% - var(--cut)) 100%, var(--cut) 100%, 0 calc(100% - var(--cut)), 0 var(--cut));
+  background: linear-gradient(90deg, var(--yellow) 0%, #e2ff1a 38%, #9ee000 72%, #2f8f00 100%);
+  box-shadow: 0 0 24px rgba(246, 255, 77, .45);
+  transition: filter .2s ease, transform .2s ease;
+}
+.bar:hover { filter: brightness(1.08); transform: translateX(4px); }
+.bar-node {
+  flex: none; width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center;
+  background: radial-gradient(circle at 38% 32%, #3b7d00, #062000 72%); border: 2px solid #0b2600;
+  color: var(--text); font: 700 21px var(--display);
+}
+.bar-icon { flex: none; width: 56px; height: 56px; margin: -6px 0; filter: drop-shadow(0 2px 3px rgba(0, 0, 0, .45)); }
+.bar-text { display: grid; gap: 2px; min-width: 0; }
+.bar-title { font: italic 700 clamp(20px, 2.4vw, 26px)/1.05 var(--display); letter-spacing: .06em; text-transform: uppercase; }
+.bar-meta { font: 600 14px/1.2 var(--body); opacity: .82; }
+.sub-links { display: flex; flex-wrap: wrap; gap: 8px 22px; margin-top: 16px; font-size: 15px; color: var(--dim); }
+.sub-links a { color: var(--soft); text-underline-offset: 3px; }
+.sub-links a:hover { color: var(--acid); }
+.consoles { display: flex; flex-wrap: wrap; gap: 8px; margin: 30px 0 0; padding: 0; list-style: none; }
+.consoles li {
+  font: 700 12px/1 var(--display); letter-spacing: .16em; color: var(--soft);
+  border: 1px solid rgba(98, 255, 10, .35); padding: 8px 11px; border-radius: 4px; background: rgba(0, 26, 0, .6);
+}
+
+/* ---------- screens ---------- */
+section { padding-block: clamp(48px, 8vw, 96px); }
+.band { background: linear-gradient(180deg, var(--ink-2), var(--ink)); border-top: 1px solid rgba(98, 255, 10, .18); }
+h2 {
+  margin: 0 0 10px; font: italic 700 clamp(28px, 4vw, 42px)/1.05 var(--display); text-transform: uppercase;
+  letter-spacing: .03em; color: #dfff66; text-wrap: balance;
+}
+.section-lede { margin: 0 0 32px; max-width: 40em; color: var(--soft); }
+.screens { display: grid; grid-template-columns: 1.6fr 1fr; gap: 18px; }
+.screens figure { margin: 0; min-width: 0; }
+.screens .side { display: grid; gap: 18px; }
+.shot {
+  border-radius: 10px; overflow: hidden; border: 1px solid rgba(98, 255, 10, .3);
+  box-shadow: 0 0 0 1px #000, 0 18px 50px rgba(0, 0, 0, .6), 0 0 40px rgba(98, 255, 10, .08);
+}
+.shot img { width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: cover; }
+figcaption { margin-top: 10px; font-size: 15px; color: var(--dim); }
+figcaption b { font: 700 13px var(--display); letter-spacing: .14em; text-transform: uppercase; color: var(--soft); margin-right: 6px; }
+
+/* ---------- first launch ---------- */
+.steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; margin: 0; padding: 0; list-style: none; counter-reset: s; }
+.steps li {
+  counter-increment: s; position: relative; min-width: 0;
+  padding: 26px 22px 24px; background: var(--ink-2); border: 1px solid rgba(98, 255, 10, .22); border-radius: 8px;
+}
+.steps li::before {
+  content: counter(s); display: grid; place-items: center; width: 42px; height: 42px; border-radius: 50%;
+  margin-bottom: 16px; font: 700 19px var(--display); color: var(--text);
+  background: radial-gradient(circle at 38% 32%, #3b7d00, #062000 72%); border: 2px solid var(--acid);
+  box-shadow: 0 0 14px rgba(186, 255, 0, .4);
+}
+.steps h3 { margin: 0 0 8px; font: 700 18px/1.2 var(--display); letter-spacing: .06em; text-transform: uppercase; color: var(--text); }
+.steps p { margin: 0; color: var(--soft); font-size: 16px; }
+.path { font-weight: 600; color: var(--text); }
+.note { margin: 24px 0 0; font-size: 15px; color: var(--dim); max-width: 48em; }
+
+footer { padding-block: 36px calc(36px + env(safe-area-inset-bottom, 0px)); border-top: 1px solid rgba(98, 255, 10, .15); }
+.foot { display: flex; flex-wrap: wrap; gap: 12px 28px; align-items: center; justify-content: space-between; font-size: 14px; color: var(--dim); }
+.foot-links { display: flex; flex-wrap: wrap; gap: 10px 22px; }
+.foot button { background: none; border: 0; padding: 0; font: inherit; color: var(--soft); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.foot a { color: var(--soft); text-underline-offset: 3px; }
+
+@media (max-width: 820px) {
+  .home-grid { grid-template-columns: 1fr; text-align: left; }
+  .orb { width: min(62%, 240px); order: -1; }
+  .home-grid { padding-block: 24px 48px; }
+  .screens { grid-template-columns: 1fr; }
+  .steps { grid-template-columns: 1fr; }
+  .home::before, .home::after { width: 60%; opacity: .3; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .orb { animation: none; }
+  .bar, #intro { transition: none; }
+}
+</style>
+</head>
+<body>
+
+<div id="intro" role="dialog" aria-label="Devious Licks intro">
+  <video id="reel" src="media/intro.mp4" poster="media/intro-poster.jpg" playsinline preload="auto"></video>
+  <button id="play-big" type="button" aria-label="Play the intro" hidden>&#9654;</button>
+  <div class="reel-controls">
+    <button class="reel-btn" id="sound" type="button" hidden>Sound on</button>
+    <button class="reel-btn" id="skip" type="button"><span class="key">B</span> Skip</button>
+  </div>
+</div>
+
+<main>
+  <header class="home">
+    <div class="home-glow"></div>
+    <div class="wrap home-grid">
+      <div>
+        <p class="eyebrow">Devious Licks Games &middot; for Mac</p>
+        <h1>Devious <span>Licks</span></h1>
+        <p class="lede">Every Devious Licks game in one place, with the emulator built in. New games and fixes show up on their own, and the app updates itself from Settings.</p>
+        <a class="bar" id="dmg" href="https://github.com/blaiserailey-lang/devious-licks/releases/download/v0.4.1/Devious-Licks-0.4.1.dmg">
+          <img class="bar-icon" src="media/icon-128.png" alt="" width="64" height="64">
+          <span class="bar-text">
+            <span class="bar-title">Download for Mac</span>
+            <span class="bar-meta" id="dmg-meta">Version 0.4.1 &middot; 247 MB DMG &middot; Apple silicon and Intel</span>
+          </span>
+        </a>
+        <div class="sub-links">
+          <a href="#first-launch">First time opening it?</a>
+          <a href="https://github.com/blaiserailey-lang/devious-licks/releases/latest" target="_blank" rel="noopener">All releases</a>
+        </div>
+        <ul class="consoles" aria-label="Consoles it plays">
+          <li>N64</li><li>SNES</li><li>NES</li><li>Genesis</li><li>GBA</li><li>Game Boy</li><li>GBC</li>
+        </ul>
+      </div>
+      <img class="orb" src="media/orb.webp" alt="The DL orb from the app's home screen" width="1000" height="1000">
+    </div>
+  </header>
+
+  <section class="band" aria-labelledby="screens-h">
+    <div class="wrap">
+      <h2 id="screens-h">A console on your Mac</h2>
+      <p class="section-lede">The library is a dashboard you drive with a controller, the keyboard or the mouse. A to pick, B to go back.</p>
+      <div class="screens">
+        <figure>
+          <div class="shot"><img src="media/app-home.webp" alt="The Devious Licks home screen: the DL orb with Games, Load ROM, Friends and Settings" loading="lazy" width="1600" height="900"></div>
+          <figcaption><b>Home</b>Games, Load ROM, Friends and Settings.</figcaption>
+        </figure>
+        <div class="side">
+          <figure>
+            <div class="shot"><img src="media/app-load.webp" alt="The Load ROM screen with a Choose a game file button" loading="lazy" width="1280" height="720"></div>
+            <figcaption><b>Load ROM</b>Add a game file you own. It stays on your Mac.</figcaption>
+          </figure>
+          <figure>
+            <div class="shot"><img src="media/app-settings.webp" alt="The Settings screen with Update, Refresh, Sound, Volume and Motion" loading="lazy" width="1600" height="900"></div>
+            <figcaption><b>Settings</b>Update the app and refresh the games.</figcaption>
+          </figure>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="first-launch" aria-labelledby="launch-h">
+    <div class="wrap">
+      <h2 id="launch-h">First launch</h2>
+      <p class="section-lede">The app isn't signed with an Apple developer certificate yet, so macOS asks you to OK it once.</p>
+      <ol class="steps">
+        <li>
+          <h3>Install</h3>
+          <p>Open the DMG and drag Devious Licks into your Applications folder.</p>
+        </li>
+        <li>
+          <h3>Open it once</h3>
+          <p>Double-click Devious Licks. macOS says it can't check the app for malware. Click <span class="path">Done</span>.</p>
+        </li>
+        <li>
+          <h3>Allow it</h3>
+          <p>Go to <span class="path">System Settings &rsaquo; Privacy &amp; Security</span>, scroll down and click <span class="path">Open Anyway</span> next to Devious Licks, then enter your Mac password.</p>
+        </li>
+      </ol>
+      <p class="note">You only do this once. After that, new versions arrive through the Update button in the app's Settings, so you won't need to download the DMG again.</p>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap foot">
+    <span>&copy; 2026 Devious Licks Games</span>
+    <span class="foot-links">
+      <button type="button" id="replay">Replay intro</button>
+      <a href="https://github.com/blaiserailey-lang/devious-licks" target="_blank" rel="noopener">GitHub</a>
+    </span>
+  </div>
+</footer>
+
+<script>
+(function () {
+  var intro = document.getElementById('intro');
+  var reel = document.getElementById('reel');
+  var sound = document.getElementById('sound');
+  var skip = document.getElementById('skip');
+  var playBig = document.getElementById('play-big');
+
+  function finish() {
+    if (intro.classList.contains('done')) return;
+    intro.classList.add('done');
+    try { reel.pause(); } catch (e) {}
+    document.body.style.overflow = '';
+    var dl = document.getElementById('dmg');
+    setTimeout(function () { try { dl.focus({ preventScroll: true }); } catch (e) {} }, 400);
+  }
+
+  function start(withSound) {
+    intro.classList.remove('done');
+    document.body.style.overflow = 'hidden';
+    window.scrollTo(0, 0);
+    reel.currentTime = 0;
+    reel.muted = !withSound;
+    playBig.hidden = true;
+    var p = reel.play();
+    if (p && p.then) {
+      p.then(function () { sound.hidden = !reel.muted; })
+       .catch(function () {
+         if (!reel.muted) { start(false); return; }   // sound blocked: play it muted instead
+         playBig.hidden = false;                       // even muted autoplay blocked
+       });
+    }
+  }
+
+  sound.addEventListener('click', function () {
+    reel.muted = false; reel.currentTime = 0; reel.play(); sound.hidden = true;
+  });
+  playBig.addEventListener('click', function () { start(true); });
+  skip.addEventListener('click', finish);
+  reel.addEventListener('ended', finish);
+  reel.addEventListener('error', finish);
+  document.addEventListener('keydown', function (e) {
+    if (intro.classList.contains('done')) return;
+    if (e.key === 'Escape' || e.key === 'Enter' || e.key === ' ') { e.preventDefault(); finish(); }
+  });
+  document.getElementById('replay').addEventListener('click', function () { start(true); });
+
+  start(true);
+
+  // Point the download bar at the newest DMG. If GitHub can't be reached, the 0.4.0 link stays.
+  fetch('https://api.github.com/repos/blaiserailey-lang/devious-licks/releases/latest')
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (rel) {
+      if (!rel || !rel.assets) return;
+      var dmg = rel.assets.filter(function (a) { return /\.dmg$/i.test(a.name); })[0];
+      if (!dmg) return;
+      var v = String(rel.tag_name || '').replace(/^v/, '');
+      document.getElementById('dmg').href = dmg.browser_download_url;
+      document.getElementById('dmg-meta').textContent =
+        'Version ' + v + ' · ' + Math.round(dmg.size / 1048576) + ' MB DMG · Apple silicon and Intel';
+    })
+    .catch(function () {});
+})();
+</script>
+</body>
+</html>
