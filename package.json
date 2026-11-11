@@ -1,7 +1,7 @@
 {
   "name": "devious-licks",
   "productName": "Devious Licks",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "The Devious Licks game library: every Devious Licks game, kept up to date, with a built-in emulator.",
   "main": "src/boot.js",
   "private": true,
@@ -16,7 +16,7 @@
     },
     "update": {
       "needsApp": "0.3.2",
-      "notes": "A new look: the library is now a console dashboard. Pick Games to flip through your games as boxes, Load ROM to add your own, and Settings for Update and Refresh. Works with the keyboard, a controller or the mouse."
+      "notes": "A new app icon: the purple and gold DL. It shows in the Dock while the app runs; to see it in Finder and Launchpad too, install once more from the newest DMG."
     }
   },
   "scripts": {

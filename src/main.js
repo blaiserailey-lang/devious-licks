@@ -575,6 +575,13 @@ app.on('second-instance', () => {
 });
 
 app.whenReady().then(async () => {
+  // The icon in the Dock while the app runs. (An app that updates itself keeps
+  // the icon it was installed with in the Finder; this one comes with the update.)
+  try {
+    if (process.platform === 'darwin' && app.dock) app.dock.setIcon(nativeImage.createFromPath(path.join(__dirname, 'icon.png')));
+  } catch {
+    // the installed icon stays
+  }
   if (!FIRST) return;
   updater = makeUpdater();
   // The About box reads the installed app's version; say which one is really running.
